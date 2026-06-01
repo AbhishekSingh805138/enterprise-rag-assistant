@@ -1,0 +1,31 @@
+# Core LangChain 1.0 ecosystem (GA Oct 2025, stable through 2.0)
+langchain>=1.0,<2.0
+langchain-core>=1.0,<2.0
+langchain-openai>=1.0,<2.0
+langchain-community>=0.4
+langchain-text-splitters>=1.0,<2.0
+langchain-chroma>=0.2
+
+# Orchestration
+langgraph>=1.0,<2.0
+langgraph-checkpoint-sqlite>=2.0
+
+# Vector store
+chromadb>=0.5
+
+# Retrieval extras (Phase 3+)
+rank-bm25>=0.2.2          # sparse / hybrid search
+
+# Document loaders
+pypdf>=5.0               # PDF loading
+unstructured>=0.16       # richer doc parsing (optional)
+
+# Evaluation (Phase 2)
+ragas>=0.2
+datasets>=3.0
+
+# App / infra
+python-dotenv>=1.0
+pydantic>=2.0
+fastapi>=0.115           # Phase 7
+uvicorn>=0.32            # Phase 7
