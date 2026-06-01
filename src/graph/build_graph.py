@@ -14,6 +14,9 @@ thread_id so you get resumability and human-in-the-loop for free.
 """
 from __future__ import annotations
 
+import logging
+import uuid
+
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 
@@ -27,8 +30,14 @@ from src.graph.nodes import (
 )
 from src.graph.state import RAGState
 
+logger = logging.getLogger(__name__)
+
+# Module-level cached graph — compiled once, reused across calls.
+_compiled_graph = None
+
 
 def build_graph(checkpointer=None):
+    """Build and compile the CRAG StateGraph."""
     builder = StateGraph(RAGState)
 
     builder.add_node("retrieve", retrieve)
@@ -57,8 +66,31 @@ def build_graph(checkpointer=None):
     return builder.compile(checkpointer=checkpointer or InMemorySaver())
 
 
-def ask(question: str, thread_id: str = "default") -> str:
-    graph = build_graph()
-    config = {"configurable": {"thread_id": thread_id}}
-    result = graph.invoke({"question": question, "retries": 0}, config)
-    return result["generation"]
+def get_graph():
+    """Return the cached compiled graph (singleton)."""
+    global _compiled_graph
+    if _compiled_graph is None:
+        _compiled_graph = build_graph()
+        logger.info("CRAG graph compiled and cached")
+    return _compiled_graph
+
+
+def ask(question: str, thread_id: str | None = None) -> str:
+    """Run a question through the CRAG graph. Returns the answer string."""
+    if not question or not question.strip():
+        return "Please provide a question."
+
+    tid = thread_id or uuid.uuid4().hex[:12]
+    logger.info("CRAG query (thread=%s): %s", tid, question[:120])
+
+    graph = get_graph()
+    config = {"configurable": {"thread_id": tid}}
+
+    try:
+        result = graph.invoke({"question": question, "retries": 0}, config)
+        answer = result.get("generation", "No answer was generated.")
+        logger.info("CRAG answer (thread=%s): %d chars", tid, len(answer))
+        return answer
+    except Exception:
+        logger.exception("CRAG graph failed for: %s", question[:120])
+        raise

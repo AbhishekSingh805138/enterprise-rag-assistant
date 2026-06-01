@@ -27,9 +27,15 @@ __pycache__/
 # Project-specific
 chroma_db/
 .ragas_cache/
-data/sample_docs/*
-!data/sample_docs/.gitkeep
+chroma_store_data/
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage
 
 # OS / IDE
 .DS_Store
 .ipynb_checkpoints/
+.idea/
+.vscode/

@@ -1,32 +1,73 @@
 """Ingest documents into ChromaDB.
 
 Usage:
+    python -m scripts.ingest                          # default: ./data/sample_docs
     python -m scripts.ingest ./data/sample_docs
     python -m scripts.ingest ./some_file.pdf
 """
 from __future__ import annotations
 
+import argparse
+import logging
 import sys
 
-from config import settings
+from config import settings, setup_logging
 from src.ingestion.chunker import chunk_documents
 from src.ingestion.loader import load_path
-from src.vectorstore.chroma_store import add_chunks
+from src.vectorstore.chroma_store import add_chunks, collection_stats
+
+logger = logging.getLogger(__name__)
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Ingest documents into the ChromaDB vector store.",
+    )
+    parser.add_argument(
+        "path",
+        nargs="?",
+        default="./data/sample_docs",
+        help="File or directory to ingest (default: ./data/sample_docs)",
+    )
+    parser.add_argument(
+        "--chunk-size", type=int, default=None,
+        help=f"Override chunk size (default: {settings.chunk_size})",
+    )
+    parser.add_argument(
+        "--chunk-overlap", type=int, default=None,
+        help=f"Override chunk overlap (default: {settings.chunk_overlap})",
+    )
+    args = parser.parse_args()
+
+    setup_logging()
     settings.validate()
-    target = sys.argv[1] if len(sys.argv) > 1 else "./data/sample_docs"
 
-    print(f"Loading from {target} ...")
-    docs = load_path(target)
-    print(f"  loaded {len(docs)} document(s)")
+    try:
+        print(f"Loading from {args.path} ...")
+        docs = load_path(args.path)
+        print(f"  Loaded {len(docs)} document(s)")
 
-    chunks = chunk_documents(docs)
-    print(f"  split into {len(chunks)} chunk(s)")
+        chunks = chunk_documents(
+            docs,
+            chunk_size=args.chunk_size,
+            chunk_overlap=args.chunk_overlap,
+        )
+        print(f"  Split into {len(chunks)} chunk(s)")
 
-    n = add_chunks(chunks)
-    print(f"Embedded and persisted {n} chunk(s) to {settings.chroma_dir}")
+        added = add_chunks(chunks)
+        print(f"  Persisted {added} new chunk(s) to {settings.chroma_dir}")
+
+        stats = collection_stats()
+        print(f"  Collection total: {stats['document_count']} chunk(s)")
+
+    except FileNotFoundError as e:
+        logger.error("No documents found: %s", e)
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        logger.exception("Ingestion failed")
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

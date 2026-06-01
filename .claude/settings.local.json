@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/ -v --tb=short)",
+      "Bash(python -m venv .venv)",
+      "Bash(.venv/Scripts/activate)",
+      "Bash(pip install:*)",
+      "Bash(.venv/Scripts/python -m pip install -r requirements.txt)",
+      "Bash(.venv/Scripts/python -m pytest tests/ -v --tb=short)",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/ -v --tb=short)",
+      "Bash(.venv/Scripts/python.exe -m pip install langchain-text-loaders)",
+      "Bash(.venv/Scripts/python.exe -c \"from langchain_community.document_loaders import PyPDFLoader, TextLoader; print\\('PyPDFLoader and TextLoader available from langchain_community'\\)\")",
+      "Bash(rm -rf chroma_db)",
+      "Bash(.venv/Scripts/python.exe -m scripts.ingest ./data/sample_docs)",
+      "Bash(.venv/Scripts/python.exe -m scripts.ask \"What is the remote work policy?\")",
+      "Bash(.venv/Scripts/python.exe -m scripts.ask \"What is the password policy and minimum length requirement?\")",
+      "Bash(.venv/Scripts/python.exe -m scripts.ask \"What is the capital of Mars?\")",
+      "Bash(.venv/Scripts/python.exe -m scripts.ask --mode graph \"What are the vendor payment terms and SLA requirements?\")",
+      "Bash(.venv/Scripts/python.exe -m scripts.ask --filter department=finance \"What was the Q1 2026 total revenue?\")",
+      "Bash(.venv/Scripts/python.exe -m scripts.ask --mode graph \"What is the recipe for chocolate cake?\")"
+    ]
+  }
+}

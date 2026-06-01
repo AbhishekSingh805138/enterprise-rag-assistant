@@ -1,0 +1,74 @@
+Acme Corp Change Management Process
+=====================================
+
+1. OVERVIEW
+
+All changes to production systems must follow this change management process.
+A "change" is any modification to hardware, software, configuration, network,
+or operational procedures in the production environment.
+
+2. CHANGE CATEGORIES
+
+Standard Changes:
+  Pre-approved, low-risk changes that follow a documented procedure. Examples:
+  routine patching, certificate renewals, DNS record updates. No CAB review
+  required. Must be logged in the change management system (ServiceNow).
+
+Normal Changes:
+  Changes that require review and approval. Submitted at least 5 business days
+  before the planned implementation date. Require a change request with:
+  - Description and business justification
+  - Risk assessment (impact and likelihood)
+  - Implementation plan with step-by-step instructions
+  - Rollback plan with estimated rollback time
+  - Testing evidence (staging environment results)
+  - Communication plan for affected users
+
+Emergency Changes:
+  Changes required to resolve a critical incident (SEV-1 or SEV-2). May bypass
+  the standard approval process but require:
+  - Verbal approval from the on-call Change Manager
+  - Post-implementation documentation within 24 hours
+  - Retrospective review at the next CAB meeting
+
+3. CHANGE ADVISORY BOARD (CAB)
+
+The CAB meets weekly on Wednesdays at 2 PM to review Normal change requests.
+Membership includes:
+  - VP of Engineering (Chair)
+  - Lead SRE
+  - Security representative
+  - QA representative
+  - Affected team leads (invited as needed)
+
+Changes are approved, rejected, or deferred. Rejected changes receive written
+feedback and may be resubmitted after addressing concerns.
+
+4. MAINTENANCE WINDOWS
+
+Standard maintenance window: Saturdays 2 AM - 6 AM ET.
+Extended maintenance window (quarterly): First Saturday of each quarter, 12 AM - 8 AM ET.
+Changes outside maintenance windows require VP of Engineering approval and must
+include a customer notification plan.
+
+5. CHANGE FREEZE
+
+Change freezes are enforced during:
+  - Last two weeks of each fiscal quarter (revenue-critical period)
+  - Major product launches (declared by Product leadership)
+  - Holiday seasons (December 20 - January 3)
+
+Only emergency changes are permitted during change freeze periods.
+
+6. POST-IMPLEMENTATION REVIEW
+
+All Normal and Emergency changes must have a post-implementation review within
+3 business days. The review assesses:
+  - Was the change implemented as planned?
+  - Were there unexpected issues or deviations?
+  - Was the rollback plan adequate?
+  - Are monitoring and alerts in place for the changed systems?
+  - Were all stakeholders properly notified?
+
+Metrics tracked: change success rate (target: >95%), mean time to implement,
+number of emergency changes per month (target: <5% of total changes).
