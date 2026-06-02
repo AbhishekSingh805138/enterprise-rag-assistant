@@ -8,6 +8,8 @@ makes the data flow explicit.
 from __future__ import annotations
 
 import logging
+import time
+import uuid
 
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
@@ -16,7 +18,6 @@ from langchain_core.runnables import Runnable, RunnableParallel, RunnablePassthr
 from langchain_openai import ChatOpenAI
 
 from config import settings
-from src.vectorstore.chroma_store import get_retriever
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +46,14 @@ def _format_docs(docs: list[Document]) -> str:
     )
 
 
-def build_naive_rag_chain(k: int | None = None, filter: dict | None = None) -> Runnable:
+def build_naive_rag_chain(
+    k: int | None = None,
+    filter: dict | None = None,
+    retriever_strategy: str = "dense",
+) -> Runnable:
     """Compose the LCEL chain: {context, question} -> prompt -> llm -> str."""
-    retriever = get_retriever(k=k, filter=filter)
+    from src.retrieval import get_retriever
+    retriever = get_retriever(strategy=retriever_strategy, k=k, filter=filter)
     llm = ChatOpenAI(
         model=settings.llm_model,
         temperature=0,
@@ -62,15 +68,50 @@ def build_naive_rag_chain(k: int | None = None, filter: dict | None = None) -> R
     return context_and_question | _prompt | llm | StrOutputParser()
 
 
-def answer(question: str, k: int | None = None, filter: dict | None = None) -> str:
+def answer(
+    question: str,
+    k: int | None = None,
+    filter: dict | None = None,
+    retriever_strategy: str = "dense",
+) -> str:
     """Answer a question using naive RAG. Returns the LLM response string."""
     if not question or not question.strip():
         return "Please provide a question."
 
-    logger.info("Naive RAG query: %s", question[:120])
+    logger.info("Naive RAG query (retriever=%s): %s", retriever_strategy, question[:120])
+
+    from src.observability.cost_callback import CostCallbackHandler
+
+    handler = CostCallbackHandler()
+    tid = uuid.uuid4().hex[:12]
+
     try:
-        result = build_naive_rag_chain(k=k, filter=filter).invoke(question)
+        chain = build_naive_rag_chain(
+            k=k, filter=filter, retriever_strategy=retriever_strategy,
+        )
+        start = time.perf_counter()
+        result = chain.invoke(question, config={"callbacks": [handler]})
+        latency_ms = (time.perf_counter() - start) * 1000
         logger.info("Naive RAG response length: %d chars", len(result))
+
+        # Record metrics — never let metrics failures break the query
+        try:
+            metrics = handler.flush(
+                thread_id=tid,
+                question=question,
+                latency_ms=latency_ms,
+                retriever_strategy=retriever_strategy,
+                mode="naive",
+            )
+            from src.observability.metrics_store import get_store
+            get_store().record(metrics)
+            logger.info(
+                "Query metrics: $%.5f, %d tokens, %.0fms",
+                metrics.estimated_cost_usd, metrics.total_tokens, metrics.latency_ms,
+            )
+        except Exception:
+            logger.debug("Failed to record query metrics", exc_info=True)
+
         return result
     except Exception:
         logger.exception("Naive RAG failed for query: %s", question[:120])

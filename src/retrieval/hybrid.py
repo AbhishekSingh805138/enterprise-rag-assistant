@@ -1,0 +1,168 @@
+"""Hybrid retriever: dense (ChromaDB) + sparse (BM25) fused via RRF.
+
+Dense retrieval is great at semantic similarity but misses keyword matches.
+BM25 is great at exact keyword matching but has no semantic understanding.
+Reciprocal Rank Fusion combines both ranked lists into a single list that
+captures the best of both worlds — particularly useful for enterprise docs
+where exact terms (policy names, section numbers) matter alongside meaning.
+
+RRF formula: score(d) = sum( 1 / (k + rank_i(d)) ) for each ranker i
+where k=60 is the standard smoothing constant.
+"""
+from __future__ import annotations
+
+import logging
+
+from langchain_core.callbacks import CallbackManagerForRetrieverRun
+from langchain_core.documents import Document
+from langchain_core.retrievers import BaseRetriever
+from pydantic import Field, PrivateAttr
+from rank_bm25 import BM25Okapi
+
+from config import settings
+
+logger = logging.getLogger(__name__)
+
+RRF_K = 60  # standard smoothing constant
+
+
+def _tokenize(text: str) -> list[str]:
+    """Simple whitespace + lowercase tokenizer for BM25."""
+    return text.lower().split()
+
+
+class HybridRetriever(BaseRetriever):
+    """Fuses dense (ChromaDB) and sparse (BM25) retrieval via RRF."""
+
+    k: int = Field(default=4, description="Number of documents to return")
+    fetch_k: int = Field(default=20, description="Candidates per ranker before fusion")
+    filter: dict | None = Field(default=None, description="Metadata filter for dense retriever")
+
+    _bm25: BM25Okapi | None = PrivateAttr(default=None)
+    _corpus_docs: list[Document] = PrivateAttr(default_factory=list)
+
+    def _build_bm25_index(self) -> None:
+        """Load all documents from ChromaDB and build a BM25 index."""
+        from src.vectorstore.chroma_store import get_vectorstore
+
+        store = get_vectorstore()
+        # Access the underlying Chroma collection for bulk fetch.
+        # Chroma's public retriever API doesn't support fetching all docs,
+        # so we use _collection which is stable in chromadb>=0.5.
+        collection = store._collection
+
+        try:
+            result = collection.get(include=["documents", "metadatas"])
+        except Exception:
+            logger.exception("Failed to fetch documents from ChromaDB for BM25 index")
+            self._corpus_docs = []
+            self._bm25 = None
+            return
+
+        ids = result.get("ids", [])
+        texts = result.get("documents", [])
+        metadatas = result.get("metadatas", [])
+
+        if not texts:
+            logger.warning("No documents in ChromaDB — BM25 index will be empty")
+            self._corpus_docs = []
+            self._bm25 = None
+            return
+
+        # Apply metadata filter if specified
+        self._corpus_docs = []
+        for doc_id, text, meta in zip(ids, texts, metadatas):
+            if self.filter:
+                if not all(meta.get(fk) == fv for fk, fv in self.filter.items()):
+                    continue
+            self._corpus_docs.append(
+                Document(page_content=text, metadata=meta or {})
+            )
+
+        if not self._corpus_docs:
+            logger.warning("No documents match filter — BM25 index empty")
+            self._bm25 = None
+            return
+
+        tokenized = [_tokenize(d.page_content) for d in self._corpus_docs]
+        self._bm25 = BM25Okapi(tokenized)
+        logger.info("BM25 index built: %d documents", len(self._corpus_docs))
+
+    def _get_bm25_results(self, query: str, n: int) -> list[tuple[Document, float]]:
+        """Return top-n BM25 results as (doc, score) pairs."""
+        if self._bm25 is None:
+            self._build_bm25_index()
+        if self._bm25 is None:
+            return []
+
+        scores = self._bm25.get_scores(_tokenize(query))
+        ranked_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:n]
+        return [(self._corpus_docs[i], scores[i]) for i in ranked_indices]
+
+    def _get_dense_results(self, query: str, n: int) -> list[Document]:
+        """Return top-n dense retrieval results."""
+        from src.vectorstore.chroma_store import get_retriever as _dense_retriever
+        retriever = _dense_retriever(k=n, filter=self.filter)
+        return retriever.invoke(query)
+
+    def _rrf_fuse(
+        self,
+        dense_docs: list[Document],
+        bm25_docs: list[tuple[Document, float]],
+    ) -> list[Document]:
+        """Reciprocal Rank Fusion over two ranked lists.
+
+        Returns documents sorted by fused score, limited to self.k.
+        """
+        scores: dict[str, float] = {}
+        doc_map: dict[str, Document] = {}
+
+        def _doc_key(doc: Document) -> str:
+            return doc.page_content[:200]
+
+        # Score dense results by rank
+        for rank, doc in enumerate(dense_docs, start=1):
+            key = _doc_key(doc)
+            scores[key] = scores.get(key, 0.0) + 1.0 / (RRF_K + rank)
+            doc_map[key] = doc
+
+        # Score BM25 results by rank
+        for rank, (doc, _bm25_score) in enumerate(bm25_docs, start=1):
+            key = _doc_key(doc)
+            scores[key] = scores.get(key, 0.0) + 1.0 / (RRF_K + rank)
+            if key not in doc_map:
+                doc_map[key] = doc
+
+        # Sort by fused score descending
+        ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        return [doc_map[key] for key, _ in ranked[: self.k]]
+
+    def _get_relevant_documents(
+        self,
+        query: str,
+        *,
+        run_manager: CallbackManagerForRetrieverRun | None = None,
+    ) -> list[Document]:
+        """Retrieve documents using hybrid search (dense + BM25 + RRF)."""
+        logger.info("Hybrid retrieval: %s", query[:120])
+
+        dense_docs = self._get_dense_results(query, self.fetch_k)
+        bm25_results = self._get_bm25_results(query, self.fetch_k)
+        fused = self._rrf_fuse(dense_docs, bm25_results)
+
+        logger.info(
+            "Hybrid: %d dense + %d BM25 → %d fused",
+            len(dense_docs), len(bm25_results), len(fused),
+        )
+        return fused
+
+
+def build_hybrid_retriever(
+    k: int | None = None,
+    filter: dict | None = None,
+) -> HybridRetriever:
+    """Build and return a hybrid retriever."""
+    return HybridRetriever(
+        k=k or settings.top_k,
+        filter=filter,
+    )

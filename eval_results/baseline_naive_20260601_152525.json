@@ -1,0 +1,11 @@
+{
+  "timestamp": "2026-06-01T15:25:25.204026+00:00",
+  "mode": "naive",
+  "num_items": 60,
+  "scores": {
+    "faithfulness": 0.7756,
+    "answer_relevancy": 0.8543,
+    "context_precision": 0.8125,
+    "context_recall": 0.9569
+  }
+}

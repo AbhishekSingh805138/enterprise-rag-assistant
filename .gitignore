@@ -26,6 +26,7 @@ __pycache__/
 
 # Project-specific
 chroma_db/
+checkpoints/
 .ragas_cache/
 chroma_store_data/
 
@@ -34,8 +35,9 @@ chroma_store_data/
 htmlcov/
 .coverage
 
-# OS / IDE
+# OS / IDE / Tools
 .DS_Store
 .ipynb_checkpoints/
 .idea/
 .vscode/
+.claude/

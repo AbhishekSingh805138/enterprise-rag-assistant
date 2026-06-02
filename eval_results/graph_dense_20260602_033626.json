@@ -1,0 +1,12 @@
+{
+  "timestamp": "2026-06-02T03:36:26.248311+00:00",
+  "mode": "graph",
+  "retriever": "dense",
+  "num_items": 60,
+  "scores": {
+    "faithfulness": 0.7897,
+    "answer_relevancy": 0.8543,
+    "context_precision": 0.8292,
+    "context_recall": 0.9611
+  }
+}

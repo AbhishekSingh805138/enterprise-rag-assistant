@@ -1,0 +1,275 @@
+"""Phase 5: Planner and synthesizer for multi-part question decomposition.
+
+The planner classifies incoming questions as simple or multi-part. Simple
+questions pass through unchanged to the existing CRAG flow. Multi-part
+questions are decomposed into focused sub-queries that are each answered
+independently, then the synthesizer combines the sub-answers into a
+coherent, citation-preserving final response.
+
+This addresses the legal/compliance analyst persona (US2) who asks questions
+spanning multiple contracts or departments.
+"""
+from __future__ import annotations
+
+import logging
+
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
+from pydantic import BaseModel, Field
+
+from config import settings
+from src.graph.tracing import traced
+
+logger = logging.getLogger(__name__)
+
+MAX_SUB_QUESTIONS = 5
+
+
+# --- Structured output models ------------------------------------------------
+
+class PlanResult(BaseModel):
+    """Structured output from the planner LLM."""
+    is_multi_part: bool = Field(
+        description=(
+            "True if the question contains multiple distinct sub-questions "
+            "or asks to compare/contrast across topics."
+        )
+    )
+    sub_questions: list[str] = Field(
+        description=(
+            "List of focused sub-questions. For simple questions, return "
+            "a list with just the original question. For multi-part, "
+            "decompose into 2-5 self-contained sub-questions."
+        )
+    )
+
+
+# --- Prompts ------------------------------------------------------------------
+
+_planner_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            "You are a question decomposition planner for an enterprise knowledge "
+            "assistant. Your job is to analyze a user's question and decide whether "
+            "it should be answered directly or decomposed into sub-questions.\n\n"
+            "A question is MULTI-PART if it:\n"
+            "  - Asks about two or more distinct topics (e.g., 'Compare X and Y')\n"
+            "  - Spans multiple departments or document types\n"
+            "  - Asks for a list of items from different sources\n"
+            "  - Contains conjunctions like 'and', 'as well as', 'both', 'compare'\n\n"
+            "A question is SIMPLE if it:\n"
+            "  - Asks about one specific topic\n"
+            "  - Can be answered from a single document or department\n"
+            "  - Is a straightforward factual lookup\n\n"
+            "Rules:\n"
+            "1. For SIMPLE questions: set is_multi_part=false, sub_questions=[original question]\n"
+            "2. For MULTI-PART questions: set is_multi_part=true, decompose into 2-5 "
+            "focused, self-contained sub-questions\n"
+            "3. Each sub-question must be independently answerable without context "
+            "from the other sub-questions\n"
+            "4. Preserve the original intent and specificity in each sub-question\n"
+            "5. Do NOT add sub-questions about topics not mentioned in the original",
+        ),
+        ("human", "{question}"),
+    ]
+)
+
+_synthesize_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            "You are a synthesis assistant for an enterprise knowledge system. "
+            "You are given a user's original question and individual answers to "
+            "its sub-parts. Your job is to combine these into a single, coherent "
+            "response.\n\n"
+            "Rules:\n"
+            "1. Preserve ALL source citations (e.g., '(handbook.md)') from the sub-answers\n"
+            "2. Do NOT add any information not present in the sub-answers\n"
+            "3. If a sub-answer says it doesn't have enough information, note that "
+            "in your synthesis\n"
+            "4. Organize the response logically — group related information together\n"
+            "5. Use clear headings or bullet points for multi-topic answers\n"
+            "6. Keep the response concise but complete",
+        ),
+        (
+            "human",
+            "Original question: {question}\n\n"
+            "Sub-answers:\n{sub_answers}",
+        ),
+    ]
+)
+
+
+def _llm(temperature: float = 0) -> ChatOpenAI:
+    return ChatOpenAI(
+        model=settings.llm_model,
+        temperature=temperature,
+        api_key=settings.openai_api_key,
+    )
+
+
+# --- Node: planner -----------------------------------------------------------
+
+@traced
+def planner(state: dict) -> dict:
+    """Classify question as simple or multi-part and decompose if needed."""
+    question = state["question"]
+    logger.info("Planner analyzing: %s", question[:120])
+
+    try:
+        chain = _planner_prompt | _llm().with_structured_output(PlanResult)
+        result: PlanResult = chain.invoke({"question": question})
+
+        # Clamp sub-questions to MAX_SUB_QUESTIONS
+        subs = result.sub_questions[:MAX_SUB_QUESTIONS]
+        if not subs:
+            subs = [question]
+
+        logger.info(
+            "Planner: is_multi_part=%s, sub_questions=%d",
+            result.is_multi_part, len(subs),
+        )
+        return {
+            "is_multi_part": result.is_multi_part and len(subs) > 1,
+            "sub_questions": subs,
+            "sub_answers": [],
+            "current_sub_idx": 0,
+            "original_question": question,
+        }
+    except Exception:
+        logger.exception("Planner failed — treating as simple question")
+        return {
+            "is_multi_part": False,
+            "sub_questions": [question],
+            "sub_answers": [],
+            "current_sub_idx": 0,
+            "original_question": question,
+        }
+
+
+# --- Node: process_sub_query ------------------------------------------------
+
+@traced
+def process_sub_query(state: dict) -> dict:
+    """Process the current sub-question: retrieve + grade + generate.
+
+    This is a compact node that runs retrieval and generation for a single
+    sub-question, then advances the index. It does NOT use the full CRAG
+    retry loop — each sub-query gets one retrieval attempt with the
+    configured strategy.
+    """
+    sub_questions = state.get("sub_questions", [])
+    idx = state.get("current_sub_idx", 0)
+    sub_answers = list(state.get("sub_answers", []))
+    strategy = state.get("retriever_strategy", "dense")
+
+    if idx >= len(sub_questions):
+        logger.warning("process_sub_query called with index %d >= %d sub-questions", idx, len(sub_questions))
+        return {"current_sub_idx": idx}
+
+    sub_q = sub_questions[idx]
+    logger.info("Processing sub-question [%d/%d]: %s", idx + 1, len(sub_questions), sub_q[:100])
+
+    # Retrieve documents for the sub-question
+    from src.retrieval import get_retriever
+
+    try:
+        docs = get_retriever(strategy=strategy).invoke(sub_q)
+    except Exception:
+        logger.exception("Retrieval failed for sub-question: %s", sub_q[:80])
+        docs = []
+
+    # Generate answer for the sub-question
+    if not docs:
+        sub_answer = (
+            f"I don't have enough information in the available documents "
+            f"to answer: {sub_q}"
+        )
+    else:
+        try:
+            from langchain_core.output_parsers import StrOutputParser
+            from src.graph.nodes import _gen_prompt
+
+            chain = _gen_prompt | _llm() | StrOutputParser()
+            context = "\n\n".join(
+                f"[{d.metadata.get('filename', '?')}] {d.page_content}"
+                for d in docs
+            )
+            sub_answer = chain.invoke({"question": sub_q, "context": context})
+        except Exception:
+            logger.exception("Generation failed for sub-question: %s", sub_q[:80])
+            sub_answer = f"An error occurred while answering: {sub_q}"
+
+    sub_answers.append(sub_answer)
+    logger.info("Sub-answer [%d/%d]: %d chars", idx + 1, len(sub_questions), len(sub_answer))
+
+    return {
+        "sub_answers": sub_answers,
+        "current_sub_idx": idx + 1,
+        "documents": docs,  # keep docs from last sub-query for critic
+    }
+
+
+# --- Node: synthesize -------------------------------------------------------
+
+@traced
+def synthesize(state: dict) -> dict:
+    """Combine sub-answers into a single coherent response with citations."""
+    original_question = state.get("original_question", state.get("question", ""))
+    sub_questions = state.get("sub_questions", [])
+    sub_answers = state.get("sub_answers", [])
+
+    if not sub_answers:
+        logger.warning("Synthesize called with no sub-answers")
+        return {
+            "generation": (
+                "I don't have enough information in the available documents "
+                "to answer this question."
+            )
+        }
+
+    # Format sub-answers for the synthesis prompt
+    formatted = "\n\n".join(
+        f"--- Sub-question {i+1}: {q} ---\n{a}"
+        for i, (q, a) in enumerate(zip(sub_questions, sub_answers))
+    )
+
+    try:
+        chain = _synthesize_prompt | _llm() | StrOutputParser()
+        synthesis = chain.invoke({
+            "question": original_question,
+            "sub_answers": formatted,
+        })
+        logger.info("Synthesized answer: %d chars from %d sub-answers", len(synthesis), len(sub_answers))
+        return {"generation": synthesis, "question": original_question}
+    except Exception:
+        logger.exception("Synthesis failed — concatenating sub-answers")
+        # Fallback: simple concatenation
+        fallback = "\n\n".join(
+            f"**{q}**\n{a}" for q, a in zip(sub_questions, sub_answers)
+        )
+        return {"generation": fallback, "question": original_question}
+
+
+# --- Router functions --------------------------------------------------------
+
+def route_after_plan(state: dict) -> str:
+    """Route simple questions to CRAG flow, multi-part to sub-query loop."""
+    if state.get("is_multi_part"):
+        logger.debug("Route → process_sub_query (multi-part detected)")
+        return "process_sub_query"
+    logger.debug("Route → retrieve (simple question)")
+    return "retrieve"
+
+
+def has_more_sub_queries(state: dict) -> str:
+    """Check if there are more sub-questions to process."""
+    idx = state.get("current_sub_idx", 0)
+    total = len(state.get("sub_questions", []))
+    if idx < total:
+        logger.debug("Route → process_sub_query (%d/%d remaining)", total - idx, total)
+        return "process_sub_query"
+    logger.debug("Route → synthesize (all %d sub-questions answered)", total)
+    return "synthesize"

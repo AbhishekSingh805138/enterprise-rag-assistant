@@ -53,6 +53,12 @@ def main() -> None:
         default=None,
         help=f"Number of documents to retrieve (default: {settings.top_k})",
     )
+    parser.add_argument(
+        "--retriever",
+        choices=["dense", "hybrid", "multi_query", "rerank"],
+        default="dense",
+        help="Retrieval strategy (default: dense)",
+    )
     args = parser.parse_args()
 
     setup_logging()
@@ -66,10 +72,10 @@ def main() -> None:
     try:
         if args.mode == "graph":
             from src.graph.build_graph import ask
-            print(ask(question))
+            print(ask(question, retriever_strategy=args.retriever))
         else:
             from src.rag.naive_rag import answer
-            print(answer(question, k=args.top_k, filter=args.filter))
+            print(answer(question, k=args.top_k, filter=args.filter, retriever_strategy=args.retriever))
     except Exception as e:
         logger.exception("Query failed")
         print(f"Error: {e}", file=sys.stderr)

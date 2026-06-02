@@ -21,6 +21,11 @@ class Settings:
     embedding_model: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
     chroma_dir: str = os.getenv("CHROMA_DIR", str(PROJECT_ROOT / "chroma_db"))
     chroma_collection: str = os.getenv("CHROMA_COLLECTION", "enterprise_docs")
+    checkpoint_dir: str = os.getenv("CHECKPOINT_DIR", str(PROJECT_ROOT / "checkpoints"))
+    tavily_api_key: str = os.getenv("TAVILY_API_KEY", "")
+    langsmith_api_key: str = os.getenv("LANGSMITH_API_KEY", "")
+    langsmith_tracing: str = os.getenv("LANGSMITH_TRACING", "")
+    langsmith_project: str = os.getenv("LANGSMITH_PROJECT", "enterprise-rag-assistant")
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
 
     # Retrieval defaults
@@ -28,10 +33,17 @@ class Settings:
     chunk_overlap: int = 150
     top_k: int = 4
 
+    _VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+
     def validate(self) -> None:
         if not self.openai_api_key:
             raise RuntimeError(
                 "OPENAI_API_KEY is not set. Copy .env.example to .env and add your key."
+            )
+        if self.log_level.upper() not in self._VALID_LOG_LEVELS:
+            raise ValueError(
+                f"Invalid LOG_LEVEL {self.log_level!r}. "
+                f"Choose from: {', '.join(sorted(self._VALID_LOG_LEVELS))}"
             )
         if self.chunk_size <= 0:
             raise ValueError(f"chunk_size must be positive, got {self.chunk_size}")
@@ -43,6 +55,11 @@ class Settings:
             )
         if self.top_k <= 0:
             raise ValueError(f"top_k must be positive, got {self.top_k}")
+        if self.langsmith_tracing.lower() == "true" and not self.langsmith_api_key:
+            logging.getLogger(__name__).warning(
+                "LANGSMITH_TRACING is enabled but LANGSMITH_API_KEY is not set — "
+                "tracing will be silently skipped by LangSmith."
+            )
 
 
 settings = Settings()

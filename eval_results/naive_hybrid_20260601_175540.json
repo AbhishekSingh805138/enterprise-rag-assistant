@@ -1,0 +1,12 @@
+{
+  "timestamp": "2026-06-01T17:55:40.689203+00:00",
+  "mode": "naive",
+  "retriever": "hybrid",
+  "num_items": 60,
+  "scores": {
+    "faithfulness": 0.7825,
+    "answer_relevancy": 0.8558,
+    "context_precision": 0.8273,
+    "context_recall": 0.9569
+  }
+}

@@ -1,0 +1,422 @@
+[
+    {
+        "id": "hr-001",
+        "question": "How many days per week can employees work remotely?",
+        "ground_truth": "Employees may work remotely up to 3 days per week with manager approval.",
+        "category": "easy",
+        "department": "hr"
+    },
+    {
+        "id": "hr-002",
+        "question": "What is required for a fully remote work arrangement?",
+        "ground_truth": "Fully remote arrangements require VP sign-off and a quarterly review.",
+        "category": "easy",
+        "department": "hr"
+    },
+    {
+        "id": "hr-003",
+        "question": "What are the core hours for remote employees?",
+        "ground_truth": "Remote employees must be available during core hours, 10 AM to 4 PM local time.",
+        "category": "easy",
+        "department": "hr"
+    },
+    {
+        "id": "hr-004",
+        "question": "How many PTO days do full-time employees get per year?",
+        "ground_truth": "Full-time employees accrue 20 days of paid time off (PTO) per year, accruing at 1.67 days per month.",
+        "category": "easy",
+        "department": "hr"
+    },
+    {
+        "id": "hr-005",
+        "question": "How many days of PTO can roll over to the next year?",
+        "ground_truth": "PTO does not roll over beyond 5 days into the next calendar year.",
+        "category": "easy",
+        "department": "hr"
+    },
+    {
+        "id": "hr-006",
+        "question": "How long is the parental leave for the primary caregiver?",
+        "ground_truth": "Parental leave is 16 weeks fully paid for the primary caregiver and 6 weeks for the secondary caregiver.",
+        "category": "easy",
+        "department": "hr"
+    },
+    {
+        "id": "hr-007",
+        "question": "What is the maximum daily meal reimbursement during business travel?",
+        "ground_truth": "Meals during business travel are reimbursed up to $75 per day.",
+        "category": "easy",
+        "department": "hr"
+    },
+    {
+        "id": "hr-008",
+        "question": "When are performance reviews conducted?",
+        "ground_truth": "Performance reviews are conducted semi-annually in June and December.",
+        "category": "easy",
+        "department": "hr"
+    },
+    {
+        "id": "hr-009",
+        "question": "What is the promotion eligibility requirement?",
+        "ground_truth": "Promotion eligibility requires a minimum of two consecutive 'Meets Expectations' or higher ratings.",
+        "category": "easy",
+        "department": "hr"
+    },
+    {
+        "id": "hr-010",
+        "question": "What is the ethics hotline number?",
+        "ground_truth": "The anonymous ethics hotline is 1-800-555-ETHX.",
+        "category": "easy",
+        "department": "hr"
+    },
+    {
+        "id": "hr-011",
+        "question": "What time should new hires report on their first day?",
+        "ground_truth": "New hires should report to the main reception at 9:00 AM on their first day.",
+        "category": "easy",
+        "department": "hr"
+    },
+    {
+        "id": "hr-012",
+        "question": "How long is the probation period for new employees?",
+        "ground_truth": "The standard probation period is 90 days.",
+        "category": "easy",
+        "department": "hr"
+    },
+    {
+        "id": "hr-013",
+        "question": "What is the deadline for health insurance enrollment?",
+        "ground_truth": "Health, dental, and vision insurance enrollment must be completed within 15 days of the start date.",
+        "category": "easy",
+        "department": "hr"
+    },
+    {
+        "id": "hr-014",
+        "question": "What is the 401(k) matching rate and when does it start?",
+        "ground_truth": "401(k) matching begins after 6 months of employment at a rate of 100% match on the first 4% of salary contributed.",
+        "category": "easy",
+        "department": "hr"
+    },
+    {
+        "id": "hr-015",
+        "question": "How long does the buddy program last for new hires?",
+        "ground_truth": "Each new hire is paired with a buddy for the first 60 days, with at least two 30-minute check-ins per week.",
+        "category": "easy",
+        "department": "hr"
+    },
+    {
+        "id": "legal-001",
+        "question": "What are the four data classification tiers?",
+        "ground_truth": "Data is classified into four tiers: Public, Internal, Confidential, and Restricted.",
+        "category": "easy",
+        "department": "legal"
+    },
+    {
+        "id": "legal-002",
+        "question": "How quickly must the DPO be notified of a data breach?",
+        "ground_truth": "The Data Protection Officer must be notified within 4 hours of discovery of a data breach.",
+        "category": "easy",
+        "department": "legal"
+    },
+    {
+        "id": "legal-003",
+        "question": "How long must data breach notifications to EU supervisory authorities take?",
+        "ground_truth": "If the breach affects personal data of EU residents, the relevant supervisory authority must be notified within 72 hours.",
+        "category": "easy",
+        "department": "legal"
+    },
+    {
+        "id": "legal-004",
+        "question": "What are the standard vendor payment terms?",
+        "ground_truth": "Standard payment terms are Net 30 from the date of invoice, with an early payment discount of 2% for payment within 10 days (2/10 Net 30).",
+        "category": "easy",
+        "department": "legal"
+    },
+    {
+        "id": "legal-005",
+        "question": "What is the vendor SLA uptime requirement?",
+        "ground_truth": "Vendors providing critical services must meet 99.9% availability measured monthly, excluding scheduled maintenance windows.",
+        "category": "easy",
+        "department": "legal"
+    },
+    {
+        "id": "legal-006",
+        "question": "What is the response time for a P1 critical vendor issue?",
+        "ground_truth": "Critical issues (P1) must be responded to within 1 hour and resolved within 4 hours.",
+        "category": "easy",
+        "department": "legal"
+    },
+    {
+        "id": "legal-007",
+        "question": "How much notice is required to terminate a vendor contract?",
+        "ground_truth": "Either party may terminate the agreement with 90 days written notice. Termination for cause requires 30 days written notice with an opportunity to cure.",
+        "category": "easy",
+        "department": "legal"
+    },
+    {
+        "id": "legal-008",
+        "question": "What is the vendor liability cap?",
+        "ground_truth": "The vendor's total liability is capped at 12 months of fees paid, except for breaches of confidentiality, IP infringement, or gross negligence, which are uncapped.",
+        "category": "easy",
+        "department": "legal"
+    },
+    {
+        "id": "legal-009",
+        "question": "How long do confidentiality obligations survive after vendor contract termination?",
+        "ground_truth": "Confidentiality obligations survive termination for 5 years.",
+        "category": "easy",
+        "department": "legal"
+    },
+    {
+        "id": "legal-010",
+        "question": "How long are financial transaction records retained?",
+        "ground_truth": "Financial transaction records are retained for 10 years per regulatory requirement.",
+        "category": "easy",
+        "department": "legal"
+    },
+    {
+        "id": "eng-001",
+        "question": "What authentication mechanism is required for API endpoints?",
+        "ground_truth": "All API endpoints must require authentication. The standard mechanism is OAuth 2.0 with JWT bearer tokens. Tokens expire after 1 hour and refresh tokens expire after 30 days.",
+        "category": "easy",
+        "department": "engineering"
+    },
+    {
+        "id": "eng-002",
+        "question": "What is the rate limit for public APIs?",
+        "ground_truth": "Public APIs have a rate limit of 100 requests per minute per API key.",
+        "category": "easy",
+        "department": "engineering"
+    },
+    {
+        "id": "eng-003",
+        "question": "What is the P95 latency target for read API endpoints?",
+        "ground_truth": "P95 latency must be under 200ms for read endpoints and under 500ms for write endpoints.",
+        "category": "easy",
+        "department": "engineering"
+    },
+    {
+        "id": "eng-004",
+        "question": "What is the response time for a SEV-1 incident?",
+        "ground_truth": "SEV-1 (Critical) incidents require a 15-minute response time with all hands on deck and executive notification.",
+        "category": "easy",
+        "department": "engineering"
+    },
+    {
+        "id": "eng-005",
+        "question": "When must a post-mortem be completed after an incident?",
+        "ground_truth": "A blameless post-mortem is required for all SEV-1 and SEV-2 incidents within 5 business days of resolution.",
+        "category": "easy",
+        "department": "engineering"
+    },
+    {
+        "id": "eng-006",
+        "question": "What is the on-call stipend?",
+        "ground_truth": "On-call engineers receive a $500 weekly stipend.",
+        "category": "easy",
+        "department": "engineering"
+    },
+    {
+        "id": "eng-007",
+        "question": "How long must deprecated API versions be supported?",
+        "ground_truth": "Deprecated API versions must be supported for a minimum of 6 months after the announcement.",
+        "category": "easy",
+        "department": "engineering"
+    },
+    {
+        "id": "fin-001",
+        "question": "Who needs to approve a purchase over $100,000?",
+        "ground_truth": "Purchases between $100,001 and $500,000 require CFO approval. Purchases over $500,000 require CFO plus CEO approval with Board notification.",
+        "category": "easy",
+        "department": "finance"
+    },
+    {
+        "id": "fin-002",
+        "question": "What procurement system does Acme Corp use?",
+        "ground_truth": "Acme Corp uses Coupa as its procurement system.",
+        "category": "easy",
+        "department": "finance"
+    },
+    {
+        "id": "fin-003",
+        "question": "What was Acme Corp's total revenue in Q1 2026?",
+        "ground_truth": "Total revenue for Q1 2026 was $47.3 million, representing a 12% year-over-year increase.",
+        "category": "easy",
+        "department": "finance"
+    },
+    {
+        "id": "fin-004",
+        "question": "What is the Annual Recurring Revenue (ARR)?",
+        "ground_truth": "Annual Recurring Revenue (ARR) is $152 million, up from $138 million in Q4 2025.",
+        "category": "easy",
+        "department": "finance"
+    },
+    {
+        "id": "fin-005",
+        "question": "How many employees does Acme Corp have?",
+        "ground_truth": "Total headcount at the end of Q1 2026 is 623 employees.",
+        "category": "easy",
+        "department": "finance"
+    },
+    {
+        "id": "fin-006",
+        "question": "What is the full-year 2026 revenue guidance?",
+        "ground_truth": "Management reaffirms full-year 2026 revenue guidance of $200 to $210 million, representing 15-20% year-over-year growth.",
+        "category": "easy",
+        "department": "finance"
+    },
+    {
+        "id": "sec-001",
+        "question": "What is the minimum password length requirement?",
+        "ground_truth": "The minimum password length is 14 characters, and must include at least one uppercase letter, one lowercase letter, one digit, and one special character.",
+        "category": "easy",
+        "department": "security"
+    },
+    {
+        "id": "sec-002",
+        "question": "Is SMS-based multi-factor authentication allowed?",
+        "ground_truth": "SMS-based MFA is not permitted. Approved MFA methods are hardware security keys (preferred) and authenticator apps (TOTP).",
+        "category": "easy",
+        "department": "security"
+    },
+    {
+        "id": "sec-003",
+        "question": "How quickly must critical vulnerabilities be patched?",
+        "ground_truth": "Critical vulnerabilities (CVSS 9.0+) must be patched within 48 hours.",
+        "category": "easy",
+        "department": "security"
+    },
+    {
+        "id": "sec-004",
+        "question": "How quickly must terminated employee access be revoked?",
+        "ground_truth": "Terminated employees must have all access revoked within 4 hours of separation.",
+        "category": "easy",
+        "department": "security"
+    },
+    {
+        "id": "sec-005",
+        "question": "What VPN solutions are approved for remote access?",
+        "ground_truth": "VPN is required for remote access to internal networks, using WireGuard or Zscaler.",
+        "category": "easy",
+        "department": "security"
+    },
+    {
+        "id": "ops-001",
+        "question": "What is the Recovery Time Objective for critical systems?",
+        "ground_truth": "Critical systems must be restored within 4 hours (RTO). Non-critical systems within 24 hours.",
+        "category": "easy",
+        "department": "operations"
+    },
+    {
+        "id": "ops-002",
+        "question": "What is the company's policy on paying ransoms?",
+        "ground_truth": "Company policy prohibits ransom payments. Systems must be restored from last known clean backup after forensic preservation.",
+        "category": "easy",
+        "department": "operations"
+    },
+    {
+        "id": "ops-003",
+        "question": "When does the Change Advisory Board meet?",
+        "ground_truth": "The CAB meets weekly on Wednesdays at 2 PM.",
+        "category": "easy",
+        "department": "operations"
+    },
+    {
+        "id": "ops-004",
+        "question": "What is the standard maintenance window?",
+        "ground_truth": "Standard maintenance window is Saturdays 2 AM to 6 AM ET. Extended maintenance window is quarterly on the first Saturday of each quarter, 12 AM to 8 AM ET.",
+        "category": "easy",
+        "department": "operations"
+    },
+    {
+        "id": "ops-005",
+        "question": "When are change freezes enforced?",
+        "ground_truth": "Change freezes are enforced during the last two weeks of each fiscal quarter, major product launches, and the holiday season December 20 to January 3. Only emergency changes are permitted during freeze periods.",
+        "category": "easy",
+        "department": "operations"
+    },
+    {
+        "id": "multi-001",
+        "question": "Compare the data retention period for customer records versus employee records.",
+        "ground_truth": "Customer records are retained for 7 years after account closure. Internal employee records are retained for 3 years after separation from the company. These retention periods are referenced in both the Employee Handbook and the Data Protection Policy.",
+        "category": "multi-part",
+        "department": "cross-department"
+    },
+    {
+        "id": "multi-002",
+        "question": "What are the different approval thresholds for software purchases versus general procurement?",
+        "ground_truth": "All software purchases and SaaS subscriptions must be reviewed by IT Security regardless of amount. For general procurement, authorization thresholds are: up to $5,000 by manager, $5,001-$25,000 by director, $25,001-$100,000 by VP plus Finance, $100,001-$500,000 by CFO, and over $500,000 by CFO plus CEO with Board notification.",
+        "category": "multi-part",
+        "department": "cross-department"
+    },
+    {
+        "id": "multi-003",
+        "question": "What happens when an employee is terminated in terms of both access revocation and data retention?",
+        "ground_truth": "When an employee is terminated, all system access must be revoked within 4 hours of separation (per the Information Security Policy). Their employee records are retained for 3 years after separation (per the Data Protection Policy and Employee Handbook).",
+        "category": "multi-part",
+        "department": "cross-department"
+    },
+    {
+        "id": "multi-004",
+        "question": "What are the flight booking policies for both regular business travel and procurement travel?",
+        "ground_truth": "Flight bookings must use economy class for domestic travel. Business class is permitted for international flights over 6 hours. Travel must be booked through Concur. International business class requires VP approval per the procurement policy.",
+        "category": "multi-part",
+        "department": "cross-department"
+    },
+    {
+        "id": "multi-005",
+        "question": "If a SEV-1 incident occurs, what are the incident response steps and when can a fix be deployed given the change management process?",
+        "ground_truth": "For a SEV-1 incident: respond within 15 minutes, designate an Incident Commander, open a dedicated Slack channel, notify VP of Engineering and CTO immediately. Always rollback first, never attempt a forward fix during SEV-1. For the fix, it can be deployed as an emergency change which bypasses the standard CAB approval process but requires verbal approval from the on-call Change Manager and post-implementation documentation within 24 hours.",
+        "category": "multi-part",
+        "department": "cross-department"
+    },
+    {
+        "id": "multi-006",
+        "question": "What are the financial performance highlights and headcount breakdown for Q1 2026?",
+        "ground_truth": "Q1 2026 total revenue was $47.3 million (12% YoY growth), with $36.9 million from subscriptions (78%). ARR reached $152 million. Net income was $4.2 million (8.9% net margin). Free cash flow was $6.8 million. Total headcount is 623: Engineering 248 (40%), Sales & Marketing 187 (30%), G&A 112 (18%), Customer Success 76 (12%). Net hiring was 34 with 3.2% attrition.",
+        "category": "multi-part",
+        "department": "finance"
+    },
+    {
+        "id": "multi-007",
+        "question": "What are all the required trainings for new hires and their durations?",
+        "ground_truth": "New employees must complete within 30 days: Security Awareness Training (2 hours), Anti-Harassment and Inclusion Training (1.5 hours), Compliance Basics covering SOX and GDPR (1 hour), and Tool Orientation for Slack, Jira, Confluence, and GitHub (varies by department). Failure to complete within 30 days results in a hold on system access.",
+        "category": "multi-part",
+        "department": "hr"
+    },
+    {
+        "id": "ooc-001",
+        "question": "What programming languages does Acme Corp use for backend development?",
+        "ground_truth": "The documents do not contain information about specific programming languages used for backend development.",
+        "category": "out-of-corpus",
+        "department": "none"
+    },
+    {
+        "id": "ooc-002",
+        "question": "What is the company's stock price?",
+        "ground_truth": "The documents do not contain information about stock price.",
+        "category": "out-of-corpus",
+        "department": "none"
+    },
+    {
+        "id": "ooc-003",
+        "question": "Who is the CEO of Acme Corp?",
+        "ground_truth": "The documents do not mention the CEO's name.",
+        "category": "out-of-corpus",
+        "department": "none"
+    },
+    {
+        "id": "ooc-004",
+        "question": "What is Acme Corp's refund policy for customers?",
+        "ground_truth": "The documents do not contain information about a customer refund policy.",
+        "category": "out-of-corpus",
+        "department": "none"
+    },
+    {
+        "id": "ooc-005",
+        "question": "What CRM tool does the sales team use?",
+        "ground_truth": "The documents do not mention a specific CRM tool used by the sales team.",
+        "category": "out-of-corpus",
+        "department": "none"
+    }
+]

@@ -13,15 +13,20 @@ langgraph-checkpoint-sqlite>=2.0
 # Vector store
 chromadb>=0.5
 
+# Observability (Phase 6)
+langsmith>=0.8,<1.0
+
 # Retrieval extras (Phase 3+)
 rank-bm25>=0.2.2          # sparse / hybrid search
+tavily-python>=0.5         # web search fallback (Phase 5)
 
 # Document loaders
 pypdf>=5.0               # PDF loading
 unstructured>=0.16       # richer doc parsing (optional)
 
 # Evaluation (Phase 2)
-ragas>=0.2
+ragas>=0.2,<0.3               # pin to 0.2.x; 0.4+ has broken langchain imports
+langchain-google-vertexai>=2.0 # required by ragas for vertexai compat shim
 datasets>=3.0
 
 # App / infra
