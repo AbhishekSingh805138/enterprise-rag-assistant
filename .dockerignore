@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.git/
+.hypothesis/
+.pytest_cache/
+eval_results/
+checkpoints/
+chroma_db/
+*.db
+.claude/

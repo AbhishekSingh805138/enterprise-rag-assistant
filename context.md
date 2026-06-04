@@ -1,7 +1,7 @@
 # Enterprise RAG Assistant - Project Context
 
-**Last updated:** 2026-06-02 (Session 8)
-**Updated by:** Lead Software Engineer — Phase 6 observability
+**Last updated:** 2026-06-02 (Session 9)
+**Updated by:** Lead Software Engineer — Phase 7 ship (API + UI + Docker)
 
 ---
 
@@ -40,6 +40,12 @@ Observability (Phase 6):
   MetricsStore        — SQLite persistence for per-query cost/latency
   LangSmith           — Auto-tracing via env vars (opt-in, zero code changes)
   CLI Dashboard       — scripts/metrics.py for cost/latency reporting
+
+API + UI (Phase 7):
+  FastAPI   — /health, /ask (+ SSE streaming), /ingest, /eval endpoints
+  Streamlit — Chat UI with mode/retriever selectors, streaming display, citations
+  Docker    — Dockerfile + docker-compose.yml (API + UI services, volume mounts)
+  Rate limiting — slowapi (30 req/min per IP on /ask)
 ```
 
 **Modules:**
@@ -66,7 +72,12 @@ Observability (Phase 6):
 - `scripts/ask.py` — CLI query with argparse, --mode naive|graph, --filter key=value, -k top_k, --retriever strategy
 - `scripts/metrics.py` — CLI cost/latency dashboard: --last N, --all
 - `scripts/upload_eval_dataset.py` — One-time LangSmith dataset upload: --name, --dry-run
-- `tests/` — 212 tests (unit + integration + e2e smoke) covering all modules (pytest)
+- `api/app.py` — FastAPI app with 4 endpoints, SSE streaming, CORS, rate limiting
+- `api/models.py` — Pydantic request/response models (AskRequest/Response, IngestRequest/Response, etc.)
+- `ui/app.py` — Streamlit chat UI with streaming, mode/retriever selectors, cost/latency display
+- `Dockerfile` — Python 3.11-slim container for the API
+- `docker-compose.yml` — API + UI services with volume mounts for ChromaDB and checkpoints
+- `tests/` — 228 tests (unit + integration + e2e smoke + API) covering all modules (pytest)
 
 ---
 
@@ -80,7 +91,7 @@ Observability (Phase 6):
 | 4 — LangGraph CRAG | **COMPLETE** | Critic node, SQLite checkpointer, per-node tracing, 145 tests, production audit passed |
 | 5 — Multi-agent + tools | **COMPLETE** | Planner/synthesizer, Tavily web search, calculator + data lookup tools, 183 tests |
 | 6 — Observability | **COMPLETE** | CostCallbackHandler, SQLite MetricsStore, CLI dashboard, LangSmith auto-tracing, 212 tests |
-| 7 — Ship (API/UI/Docker) | NOT STARTED | No FastAPI, no UI, no Docker |
+| 7 — Ship (API/UI/Docker) | **COMPLETE** | FastAPI (4 endpoints + SSE streaming), Streamlit chat UI, Docker + compose, 228 tests |
 
 ---
 
@@ -164,14 +175,28 @@ Observability (Phase 6):
 - [x] Updated tracing.py docstring (removed Phase 6 TODO)
 - [x] 29 new tests (212 total): cost callback (10), metrics store (7), ask+naive wiring (5), config (2), dashboard (3), upload (2)
 
+### Phase 7 — Ship: API + UI + Docker (COMPLETE)
+- [x] FastAPI app (`api/app.py`) with 4 endpoints: GET /health, POST /ask, POST /ingest, POST /eval
+- [x] Pydantic request/response models (`api/models.py`): AskRequest/Response, IngestRequest/Response, HealthResponse, EvalRequest/Response, ErrorResponse
+- [x] SSE streaming for /ask endpoint: graph mode streams node status + generation, naive mode streams tokens
+- [x] Rate limiting via slowapi (30 req/min per IP on /ask)
+- [x] CORS middleware (all origins for portfolio demo)
+- [x] Streamlit chat UI (`ui/app.py`): chat interface, mode/retriever selectors, streaming display, cost/latency metadata
+- [x] Dockerfile (Python 3.11-slim, uvicorn entrypoint)
+- [x] docker-compose.yml (API + UI services, volume mounts for ChromaDB + checkpoints)
+- [x] .dockerignore for clean builds
+- [x] Config extensions: api_host, api_port in config.py + .env.example
+- [x] slowapi>=0.1.9, streamlit>=1.40 added to requirements.txt
+- [x] 16 new tests (228 total): models (5), health (2), ask (4), ingest (2), eval (1), CORS (1), rate limiting (1)
+
 ## Pending Tasks
 
-### Phase 7 (Ship):
-- [ ] FastAPI endpoints (/ingest, /ask, /health, /eval)
-- [ ] Streaming response support
-- [ ] Streamlit or Next.js UI
-- [ ] Dockerfile + docker-compose
-- [ ] Rate limiting and structured logging
+All 7 phases are complete. Potential future enhancements:
+- [ ] Authentication (API key or JWT) for /ask and /eval endpoints
+- [ ] Prometheus metrics export
+- [ ] Production Postgres checkpointer (replace SQLite for multi-process)
+- [ ] BM25 index caching (currently rebuilt per query)
+- [ ] Next.js UI for more polished frontend
 
 ---
 
@@ -194,6 +219,9 @@ Observability (Phase 6):
 15. **@traced decorator over LangSmith** — Zero-config, always-on timing; LangSmith adds full trace export when enabled
 16. **LangChain callback for cost tracking** — CostCallbackHandler hooks on_llm_end to capture token usage; works with or without LangSmith; pricing table is hardcoded and updatable
 17. **Same SQLite DB for metrics and checkpoints** — query_metrics table lives alongside LangGraph checkpoint tables; separate connections to avoid lifecycle coupling
+18. **Streamlit over Next.js for UI** — ~150 lines for full chat interface with streaming; no build toolchain; portfolio-appropriate; FastAPI backend is unchanged if UI swapped later
+19. **SSE for streaming** — Standard Server-Sent Events via FastAPI StreamingResponse; graph mode streams node status + generation, naive mode streams tokens; consumed by Streamlit or any EventSource client
+20. **slowapi for rate limiting** — Decorator-based, per-IP; 30 req/min on /ask; lightweight for single-process
 
 ## Known Issues
 
@@ -203,9 +231,9 @@ Observability (Phase 6):
 4. Planner adds ~1-2s per query (one LLM call for classification/decomposition); multi-part questions add N additional retrieval+generation cycles
 5. Embedding costs (OpenAIEmbeddings) are not captured by CostCallbackHandler — embeddings don't fire on_llm_end. Cost is negligible (~$0.0001/query).
 
-## Next Steps (Recommended Order)
+## Next Steps
 
-1. **Phase 7** — ship (FastAPI, UI, Docker)
+All 7 phases are complete. The project is demo-ready. See "Pending Tasks" for future enhancements.
 
 ---
 
@@ -245,7 +273,7 @@ Observability (Phase 6):
 | "What is the recipe for chocolate cake?" | "I don't have enough information..." | retrieve → grade (not relevant) → rewrite → retrieve → grade → rewrite → retrieve → grade → web_search → generate | YES |
 
 ### Unit Tests
-- **212 tests passed, 0 failed** (pytest, 56s)
+- **228 tests passed, 0 failed** (pytest)
 
 ---
 
@@ -466,3 +494,38 @@ Observability (Phase 6):
   4. Metrics recording is try/except protected — never breaks the query; failures logged at DEBUG
   5. LangSmith auto-tracing via env vars — zero code changes needed; LangChain 1.0+ intercepts all runnables automatically
 - **Next:** Phase 7 — Ship (FastAPI endpoints, streaming, UI, Docker)
+
+### Session 9 — 2026-06-02
+- **Actions:** Complete Phase 7 — Ship (API + UI + Docker)
+- **What was done:**
+  - Created **FastAPI application** (`api/app.py`) with 4 endpoints:
+    - `GET /health` — liveness check with ChromaDB collection stats
+    - `POST /ask` — query with mode/retriever/filter options; supports SSE streaming (`stream: true`)
+    - `POST /ingest` — trigger document ingestion from file/directory path
+    - `POST /eval` — run RAGAS evaluation suite (long-running)
+  - Created **Pydantic models** (`api/models.py`): AskRequest/Response, IngestRequest/Response, HealthResponse, EvalRequest/Response, ErrorResponse
+  - Implemented **SSE streaming** for `/ask`:
+    - Graph mode: streams node status events + generation via `graph.stream()`
+    - Naive mode: streams LLM tokens via LCEL `chain.stream()`
+    - Both emit `{type: "token"|"status"|"done"}` events with final cost/latency metadata
+  - Added **rate limiting** via slowapi (30 req/min per IP on `/ask`)
+  - Added **CORS middleware** (all origins for portfolio demo)
+  - Created **Streamlit chat UI** (`ui/app.py`):
+    - Sidebar: mode selector, retriever strategy, health check indicator
+    - Chat interface with `st.chat_input()` + `st.chat_message()`
+    - Consumes SSE stream from `/ask`, renders tokens incrementally
+    - Displays cost/latency/tokens metadata after response
+  - Created **Dockerfile** (Python 3.11-slim, uvicorn entrypoint)
+  - Created **docker-compose.yml** (API on :8000, UI on :8501, volume mounts for chroma_db + checkpoints)
+  - Created **.dockerignore** for clean builds
+  - Added `api_host`, `api_port` to `config.py` Settings + `.env.example`
+  - Added `slowapi>=0.1.9`, `streamlit>=1.40` to requirements.txt
+  - Wrote **16 new tests** in `tests/test_phase7.py`: models (5), health (2), ask (4), ingest (2), eval (1), CORS (1), rate limiting (1)
+  - Final test suite: **228 tests, 0 failures**
+- **Architecture Decisions:**
+  1. Streamlit over Next.js — ~150 lines for full chat UI with streaming; no build toolchain; portfolio-appropriate
+  2. SSE for streaming — standard Server-Sent Events; graph streams node status, naive streams tokens
+  3. slowapi for rate limiting — decorator-based, per-IP, lightweight for single-process
+  4. CORS allows all origins — portfolio demo; can be restricted for production
+  5. Lazy imports in endpoints — prevents circular imports and speeds up startup
+- **All 7 phases are now COMPLETE.** Project is demo-ready.

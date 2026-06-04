@@ -62,7 +62,24 @@
       "Bash(/d/Projects/enterprise-rag-assistant/.venv/Scripts/python.exe -c \"from langchain_core.outputs import LLMResult; import inspect; print\\(inspect.getsource\\(LLMResult\\)\\)\")",
       "Bash(/d/Projects/enterprise-rag-assistant/.venv/Scripts/python.exe -c \" from langchain_core.outputs import LLMResult import inspect print\\(inspect.getsource\\(LLMResult\\)\\) \")",
       "Bash(/d/Projects/enterprise-rag-assistant/.venv/Scripts/python.exe -c ':*)",
-      "Bash(/d/Projects/enterprise-rag-assistant/.venv/Scripts/python.exe:*)"
+      "Bash(/d/Projects/enterprise-rag-assistant/.venv/Scripts/python.exe:*)",
+      "Bash(ls -la /d/Projects/enterprise-rag-assistant/*.md)",
+      "Bash(xargs grep:*)",
+      "Bash(curl -s http://127.0.0.1:8000/health)",
+      "Bash(nohup python:*)",
+      "Bash(echo \"PID: $!\")",
+      "Bash(echo \"Streamlit PID: $!\")",
+      "Bash(curl:*)",
+      "Bash(pkill -f \"uvicorn api.app\")",
+      "Bash(pkill -f \"streamlit run\")",
+      "Bash(echo \"API PID: $!\")",
+      "Bash(echo \"UI PID: $!\")",
+      "Bash(tasklist)",
+      "Bash(taskkill //F //IM python.exe)",
+      "Bash(uvicorn api.app:app --host 0.0.0.0 --port 8000)",
+      "Bash(streamlit run:*)",
+      "Bash(netstat -ano)",
+      "Bash(taskkill:*)"
     ]
   }
 }

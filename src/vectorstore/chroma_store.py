@@ -62,10 +62,19 @@ def reset_store() -> None:
 
 
 def _content_hash(text: str, metadata: dict) -> str:
-    """Deterministic ID from content + source so re-ingestion is idempotent."""
-    source = metadata.get("source", "")
+    """Deterministic ID from content + origin so re-ingestion is idempotent.
+
+    Uses filename + department (stable across uploads) when available,
+    falling back to the full source path for CLI/ingest-based ingestion.
+    """
+    filename = metadata.get("filename", "")
+    department = metadata.get("department", "")
+    if filename:
+        origin = f"{department}/{filename}"
+    else:
+        origin = metadata.get("source", "")
     start = str(metadata.get("start_index", ""))
-    payload = f"{source}::{start}::{text}"
+    payload = f"{origin}::{start}::{text}"
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
@@ -103,6 +112,17 @@ def add_chunks(chunks: list[Document]) -> int:
         return 0
 
     store.add_documents(new_chunks, ids=new_ids)
+
+    # Verify persistence: confirm the chunks are queryable.
+    try:
+        verify = store.get(ids=new_ids[:1], include=[])
+        if not verify or not verify.get("ids"):
+            logger.error(
+                "Persistence verification FAILED — chunks may not have been stored"
+            )
+    except Exception:
+        logger.warning("Could not verify chunk persistence", exc_info=True)
+
     logger.info(
         "Added %d new chunk(s) to Chroma (%d skipped as duplicates)",
         len(new_chunks), len(chunks) - len(new_chunks),

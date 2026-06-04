@@ -28,6 +28,10 @@ class Settings:
     langsmith_project: str = os.getenv("LANGSMITH_PROJECT", "enterprise-rag-assistant")
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
 
+    # API settings (Phase 7)
+    api_host: str = os.getenv("API_HOST", "0.0.0.0")
+    api_port: int = int(os.getenv("API_PORT", "8000"))
+
     # Retrieval defaults
     chunk_size: int = 1000
     chunk_overlap: int = 150
