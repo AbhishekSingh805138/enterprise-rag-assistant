@@ -31,6 +31,8 @@ def _llm(temperature: float = 0) -> ChatOpenAI:
         model=settings.llm_model,
         temperature=temperature,
         api_key=settings.openai_api_key,
+        timeout=settings.llm_timeout,
+        max_retries=settings.llm_max_retries,
     )
 
 
@@ -41,12 +43,39 @@ def retrieve(state: dict) -> dict:
     """Retrieve documents for the current question."""
     question = state["question"]
     strategy = state.get("retriever_strategy", "dense")
-    logger.info("Retrieve node (strategy=%s) — query: %s", strategy, question[:120])
+
+    # Phase 8: normalize query for better retrieval
+    from src.retrieval.normalizer import normalize_query
+    normalized = normalize_query(question)
+
+    # Phase 8: auto-detect department filter if none provided
+    filter_dict = state.get("filter")
+    if not filter_dict:
+        from src.retrieval.dept_detector import detect_department
+        dept = detect_department(normalized)
+        if dept:
+            filter_dict = {"department": dept}
+            logger.info("Auto-detected department: %s", dept)
+
+    # Phase 8: adaptive top_k based on query length
+    k = None
+    if settings.adaptive_k:
+        word_count = len(normalized.split())
+        if word_count <= 5:
+            k = settings.adaptive_k_min
+        elif word_count >= 15:
+            k = settings.adaptive_k_max
+        else:
+            # Linear interpolation between min and max
+            ratio = (word_count - 5) / 10.0
+            k = int(settings.adaptive_k_min + ratio * (settings.adaptive_k_max - settings.adaptive_k_min))
+
+    logger.info("Retrieve node (strategy=%s) — query: %s", strategy, normalized[:120])
     try:
-        docs = get_retriever(strategy=strategy).invoke(question)
+        docs = get_retriever(strategy=strategy, k=k, filter=filter_dict).invoke(normalized)
         logger.info("Retrieved %d document(s)", len(docs))
     except Exception:
-        logger.exception("Retrieval failed for: %s", question[:120])
+        logger.exception("Retrieval failed for: %s", normalized[:120])
         docs = []
     return {"documents": docs, "retries": state.get("retries", 0)}
 
@@ -95,8 +124,8 @@ def grade_documents(state: dict) -> dict:
         logger.info("Grader verdict: relevant=%s", verdict.relevant)
         return {"relevant": verdict.relevant}
     except Exception:
-        logger.exception("Grading failed — defaulting to relevant=True to avoid loop")
-        return {"relevant": True}
+        logger.exception("Grading failed — defaulting to relevant=False for safety")
+        return {"relevant": False}
 
 
 # --- Node: transform query (corrective step) -------------------------------
@@ -105,10 +134,15 @@ _rewrite_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "You are a query rewriter. Rewrite the user's question to be "
-            "clearer and more retrievable. Expand acronyms, add synonyms, "
-            "and rephrase for better semantic search. "
-            "Return ONLY the rewritten question, nothing else.",
+            "You are a query rewriter. The previous retrieval returned documents "
+            "that were NOT relevant to the user's question. Rewrite the question "
+            "to target different aspects or use different keywords.\n\n"
+            "Context about what was already retrieved (and rejected):\n"
+            "{rejected_context}\n\n"
+            "Guidelines:\n"
+            "- Expand acronyms, add synonyms, and rephrase for better semantic search\n"
+            "- Try to approach the topic from a different angle than before\n"
+            "- Return ONLY the rewritten question, nothing else.",
         ),
         ("human", "{question}"),
     ]
@@ -121,9 +155,20 @@ def transform_query(state: dict) -> dict:
     original = state["question"]
     retries = state.get("retries", 0) + 1
 
+    # Build a summary of rejected documents for informed rewriting
+    documents = state.get("documents", [])
+    if documents:
+        rejected_context = "; ".join(
+            d.page_content[:100] for d in documents[:3]
+        )
+    else:
+        rejected_context = "(no documents were retrieved)"
+
     try:
         rewriter = _rewrite_prompt | _llm(temperature=0.3) | StrOutputParser()
-        rewritten = rewriter.invoke({"question": original})
+        rewritten = rewriter.invoke(
+            {"question": original, "rejected_context": rejected_context}
+        )
         logger.info("Query rewritten (retry %d): %s → %s", retries, original[:80], rewritten[:80])
     except Exception:
         logger.exception("Query rewrite failed — keeping original")
@@ -191,24 +236,40 @@ def web_search(state: dict) -> dict:
 
 # --- Node: generate --------------------------------------------------------
 
-_gen_prompt = ChatPromptTemplate.from_messages(
-    [
-        (
-            "system",
-            "You are an enterprise knowledge assistant. Answer the question "
-            "using ONLY the provided context. Follow these rules strictly:\n\n"
-            "1. If the context does not contain enough information to answer, "
-            'respond with: "I don\'t have enough information in the available '
-            'documents to answer this question."\n'
-            "2. Do NOT guess, infer beyond what's stated, or invent facts.\n"
-            "3. Cite the source filename in parentheses after each claim — "
-            "e.g. (handbook.md).\n"
-            "4. If the answer draws from multiple sources, cite each one.\n\n"
-            "Context:\n{context}",
-        ),
-        ("human", "{question}"),
-    ]
+_GEN_SYSTEM_BASE = (
+    "You are an enterprise knowledge assistant. Answer the question "
+    "using the provided context. Follow these rules:\n\n"
+    "1. If the context contains partial information, provide what you can "
+    "and note what specific aspects are not covered in the documents.\n"
+    "2. Only say you cannot answer if the context is completely irrelevant "
+    "to the question. In that case respond with: "
+    '"I don\'t have enough information in the available documents to '
+    'answer this question."\n'
+    "3. Do NOT invent facts or numbers not present in the context.\n"
+    "4. Cite the source filename in parentheses after each claim — "
+    "e.g. (handbook.md).\n"
+    "5. If the answer draws from multiple sources, cite each one."
 )
+
+_GEN_COT_ADDENDUM = (
+    "\n\n6. Before answering, briefly reason through which parts of the "
+    "context are relevant and how they connect to the question. Present "
+    "your reasoning in a <thinking> block, then give the final answer."
+)
+
+
+def _build_gen_prompt() -> ChatPromptTemplate:
+    """Build generation prompt, optionally with chain-of-thought."""
+    system = _GEN_SYSTEM_BASE
+    if settings.chain_of_thought:
+        system += _GEN_COT_ADDENDUM
+    system += "\n\nContext:\n{context}"
+    return ChatPromptTemplate.from_messages(
+        [("system", system), ("human", "{question}")]
+    )
+
+
+_gen_prompt = _build_gen_prompt()
 
 
 @traced
@@ -232,6 +293,11 @@ def generate(state: dict) -> dict:
             f"[{d.metadata.get('filename', '?')}] {d.page_content}"
             for d in documents
         )
+        # Include tool results if available
+        tool_results = state.get("tool_results", [])
+        if tool_results:
+            tool_context = "\n".join(f"[tool] {r}" for r in tool_results)
+            context = f"{context}\n\n{tool_context}"
         answer = chain.invoke({"question": question, "context": context})
         logger.info("Generated answer: %d chars", len(answer))
         return {"generation": answer}
@@ -262,14 +328,18 @@ _critic_prompt = ChatPromptTemplate.from_messages(
             "Your job is to verify every factual claim in the generated answer "
             "against the source documents.\n\n"
             "Rules:\n"
-            "1. A claim is SUPPORTED only if the source documents explicitly state "
+            "1. A claim is SUPPORTED if the source documents explicitly state "
             "or directly imply the information.\n"
             "2. A claim is UNSUPPORTED if it adds details, numbers, or facts not "
             "found in the sources — even if the claim seems reasonable.\n"
-            "3. Paraphrases of source content are SUPPORTED.\n"
+            "3. Paraphrases and reasonable inferences from source content are SUPPORTED. "
+            "When in doubt, mark as SUPPORTED.\n"
             "4. General framing sentences (e.g. 'According to the documents...') "
             "are SUPPORTED — they are not factual claims.\n"
-            "5. Citations like '(handbook.md)' are not claims themselves.\n\n"
+            "5. Citations like '(handbook.md)' are not claims themselves.\n"
+            "6. Summaries that accurately condense source information are SUPPORTED.\n"
+            "7. Be lenient: only mark a claim as UNSUPPORTED when it clearly "
+            "contradicts or fabricates information beyond what's in the sources.\n\n"
             "Extract each distinct factual claim from the answer, then classify it.",
         ),
         (
@@ -285,18 +355,22 @@ _rewrite_prompt_critic = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "You are rewriting an answer to remove unsupported claims. "
-            "Keep ONLY the supported claims and their citations. "
-            "Maintain natural flow and coherence. If no supported claims remain, "
-            'respond with exactly: "I don\'t have enough information in the '
-            'available documents to answer this question."\n\n'
+            "You are rewriting an answer to remove unsupported claims while "
+            "preserving the structure and flow of the original answer. "
+            "Remove ONLY the unsupported claims, keeping the rest of the "
+            "answer intact including citations. "
+            "Maintain natural transitions between remaining points. "
+            "If no supported claims remain, respond with exactly: "
+            '"I don\'t have enough information in the available documents '
+            'to answer this question."\n\n'
             "Do NOT add any new information. Only use what is in the supported claims.",
         ),
         (
             "human",
             "Original question: {question}\n\n"
+            "Original answer:\n{original_answer}\n\n"
             "Supported claims:\n{supported}\n\n"
-            "Rewrite the answer using ONLY these supported claims:",
+            "Rewrite the answer keeping the supported claims and removing unsupported ones:",
         ),
     ]
 )
@@ -311,7 +385,9 @@ def critic(state: dict) -> dict:
     """
     question = state["question"]
     generation = state.get("generation", "")
-    documents = state.get("documents", [])
+    # Use all_sub_documents (accumulated across sub-queries) if available,
+    # otherwise fall back to documents from the last node
+    documents = state.get("all_sub_documents", state.get("documents", []))
 
     # Skip critic for "I don't know" answers
     idk_phrases = ["don't have enough information", "cannot answer", "no information available"]
@@ -361,7 +437,11 @@ def critic(state: dict) -> dict:
         supported_text = "\n".join(f"- {c}" for c in verdict.supported_claims)
         rewriter = _rewrite_prompt_critic | _llm() | StrOutputParser()
         rewritten = rewriter.invoke(
-            {"question": question, "supported": supported_text}
+            {
+                "question": question,
+                "original_answer": generation,
+                "supported": supported_text,
+            }
         )
         logger.info(
             "Critic: rewrote answer (removed %d unsupported claims, %d chars → %d chars)",

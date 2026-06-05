@@ -70,7 +70,23 @@ _planner_prompt = ChatPromptTemplate.from_messages(
             "3. Each sub-question must be independently answerable without context "
             "from the other sub-questions\n"
             "4. Preserve the original intent and specificity in each sub-question\n"
-            "5. Do NOT add sub-questions about topics not mentioned in the original",
+            "5. Do NOT add sub-questions about topics not mentioned in the original\n\n"
+            "Examples:\n\n"
+            'Q: "What is the PTO policy?"\n'
+            "→ is_multi_part=false, sub_questions=[\"What is the PTO policy?\"]\n"
+            "(Simple single-topic lookup)\n\n"
+            'Q: "Compare the engineering and HR onboarding processes"\n'
+            "→ is_multi_part=true, sub_questions=[\n"
+            '    "What is the engineering department onboarding process?",\n'
+            '    "What is the HR department onboarding process?"\n'
+            "]\n"
+            "(Comparison across two departments)\n\n"
+            'Q: "What are the security incident response steps and how do they relate to the legal compliance requirements?"\n'
+            "→ is_multi_part=true, sub_questions=[\n"
+            '    "What are the security incident response steps?",\n'
+            '    "What are the legal compliance requirements for security incidents?"\n'
+            "]\n"
+            "(Multi-topic spanning security and legal departments)",
         ),
         ("human", "{question}"),
     ]
@@ -107,6 +123,8 @@ def _llm(temperature: float = 0) -> ChatOpenAI:
         model=settings.llm_model,
         temperature=temperature,
         api_key=settings.openai_api_key,
+        timeout=settings.llm_timeout,
+        max_retries=settings.llm_max_retries,
     )
 
 
@@ -170,6 +188,7 @@ def process_sub_query(state: dict) -> dict:
         return {"current_sub_idx": idx}
 
     sub_q = sub_questions[idx]
+    all_sub_docs = list(state.get("all_sub_documents", []))
     logger.info("Processing sub-question [%d/%d]: %s", idx + 1, len(sub_questions), sub_q[:100])
 
     # Retrieve documents for the sub-question
@@ -180,6 +199,32 @@ def process_sub_query(state: dict) -> dict:
     except Exception:
         logger.exception("Retrieval failed for sub-question: %s", sub_q[:80])
         docs = []
+
+    # Phase 8: Mini-CRAG — if docs seem irrelevant, rewrite and retry once
+    if docs and settings.sub_query_max_retries > 0:
+        try:
+            from src.graph.nodes import _llm as _nodes_llm, GradeResult, _grade_prompt
+            grader = _grade_prompt | _nodes_llm().with_structured_output(GradeResult)
+            context = "\n\n".join(d.page_content for d in docs[:3])
+            verdict = grader.invoke({"question": sub_q, "context": context})
+            if not verdict.relevant:
+                logger.info("Sub-query docs irrelevant — rewriting and retrying once")
+                from src.graph.nodes import _rewrite_prompt
+                rewriter = _rewrite_prompt | _llm(temperature=0.3) | StrOutputParser()
+                rewritten = rewriter.invoke({
+                    "question": sub_q,
+                    "rejected_context": context[:300],
+                })
+                try:
+                    docs = get_retriever(strategy=strategy).invoke(rewritten)
+                    logger.info("Sub-query retry retrieved %d docs", len(docs))
+                except Exception:
+                    logger.debug("Sub-query retry retrieval failed")
+        except Exception:
+            logger.debug("Sub-query mini-CRAG failed — using original docs", exc_info=True)
+
+    # Accumulate documents across sub-queries for critic verification
+    all_sub_docs.extend(docs)
 
     # Generate answer for the sub-question
     if not docs:
@@ -208,7 +253,8 @@ def process_sub_query(state: dict) -> dict:
     return {
         "sub_answers": sub_answers,
         "current_sub_idx": idx + 1,
-        "documents": docs,  # keep docs from last sub-query for critic
+        "documents": docs,  # keep docs from last sub-query
+        "all_sub_documents": all_sub_docs,  # accumulated across all sub-queries
     }
 
 

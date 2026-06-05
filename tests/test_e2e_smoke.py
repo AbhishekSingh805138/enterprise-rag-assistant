@@ -350,6 +350,8 @@ class TestGraphStateSmoke:
             # Phase 5: multi-agent decomposition
             "original_question", "sub_questions", "sub_answers",
             "is_multi_part", "current_sub_idx",
+            # Phase 8: graph intelligence
+            "in_scope", "all_sub_documents", "tool_results",
         }
         actual = set(RAGState.__annotations__.keys())
         assert expected == actual, f"Missing: {expected - actual}, Extra: {actual - expected}"
@@ -364,6 +366,7 @@ class TestGraphStateSmoke:
             graph = build_graph(checkpointer=InMemorySaver())
             node_names = set(graph.get_graph().nodes.keys())
             expected_nodes = {
+                "scope_check",
                 "planner", "process_sub_query", "synthesize",
                 "retrieve", "grade_documents", "transform_query",
                 "web_search", "generate", "critic",

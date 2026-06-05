@@ -7,6 +7,7 @@ store can do metadata-filtered retrieval later.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
@@ -83,6 +84,7 @@ def load_path(path: str | Path) -> list[Document]:
             d.metadata["filename"] = f.name
             d.metadata["department"] = department
             d.metadata["access_level"] = access_level
+            d.metadata["ingested_at"] = datetime.now(timezone.utc).isoformat()
         docs.extend(loaded)
 
         logger.info(

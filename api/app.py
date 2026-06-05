@@ -80,11 +80,12 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
     )
 
 
-# CORS — allow all origins for portfolio demo
+# CORS — configurable via CORS_ORIGINS env var
+_cors_origins = [o.strip() for o in settings.cors_origins.split(",")]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials="*" not in _cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -119,15 +120,31 @@ async def health():
 # POST /ask
 # ---------------------------------------------------------------------------
 
-def _ask_sync(body: AskRequest) -> tuple[str, float, float, int]:
-    """Run the query synchronously and return (answer, cost, latency_ms, tokens)."""
-    from src.observability.cost_callback import CostCallbackHandler
+def _resolve_mode(body: AskRequest) -> str:
+    """Resolve 'auto' mode to either 'naive' or 'graph'."""
+    if body.mode != "auto":
+        return body.mode
+    q = body.question.strip().lower()
+    # Heuristic: use graph for complex queries
+    word_count = len(q.split())
+    has_comparison = any(w in q for w in ["compare", "versus", "vs", "difference between", "contrast"])
+    has_multi = any(w in q for w in [" and ", "both", "also", "as well as", "additionally"])
+    if word_count > 15 or has_comparison or has_multi:
+        return "graph"
+    return "naive"
 
+
+def _ask_sync(body: AskRequest) -> AskResponse:
+    """Run the query synchronously and return a full AskResponse."""
+    from src.observability.cost_callback import CostCallbackHandler, is_idk_response
+
+    resolved_mode = _resolve_mode(body)
     handler = CostCallbackHandler()
     start = time.perf_counter()
+    node_latencies = None
 
-    if body.mode == "graph":
-        from src.graph.build_graph import ask as graph_ask, get_graph
+    if resolved_mode == "graph":
+        from src.graph.build_graph import get_graph
 
         graph = get_graph()
         import uuid
@@ -142,6 +159,13 @@ def _ask_sync(body: AskRequest) -> tuple[str, float, float, int]:
             config,
         )
         answer = result.get("generation", "No answer was generated.")
+
+        # Capture per-node latencies from tracing
+        try:
+            from src.graph.tracing import get_last_run_latencies
+            node_latencies = get_last_run_latencies()
+        except Exception:
+            pass
     else:
         from src.rag.naive_rag import build_naive_rag_chain
 
@@ -153,12 +177,15 @@ def _ask_sync(body: AskRequest) -> tuple[str, float, float, int]:
         answer = chain.invoke(body.question, config={"callbacks": [handler]})
 
     latency_ms = (time.perf_counter() - start) * 1000
+    is_idk = is_idk_response(answer)
     metrics = handler.flush(
         thread_id="api",
         question=body.question,
         latency_ms=latency_ms,
         retriever_strategy=body.retriever_strategy,
-        mode=body.mode,
+        mode=resolved_mode,
+        is_idk=is_idk,
+        node_latencies=node_latencies,
     )
 
     # Record to metrics store (best-effort)
@@ -168,61 +195,91 @@ def _ask_sync(body: AskRequest) -> tuple[str, float, float, int]:
     except Exception:
         logger.debug("Failed to record API query metrics", exc_info=True)
 
-    return answer, metrics.estimated_cost_usd, latency_ms, metrics.total_tokens
+    return AskResponse(
+        answer=answer,
+        question=body.question,
+        mode=resolved_mode,
+        retriever_strategy=body.retriever_strategy,
+        cost_usd=metrics.estimated_cost_usd,
+        latency_ms=latency_ms,
+        tokens_used=metrics.total_tokens,
+        node_latencies=node_latencies,
+        is_idk=is_idk,
+    )
 
 
 def _stream_graph(body: AskRequest):
     """Generator yielding SSE events for graph mode streaming."""
-    from src.observability.cost_callback import CostCallbackHandler
-
-    handler = CostCallbackHandler()
-    start = time.perf_counter()
-
-    import uuid
-    from src.graph.build_graph import get_graph
-
-    graph = get_graph()
-    tid = uuid.uuid4().hex[:12]
-    config = {"configurable": {"thread_id": tid}, "callbacks": [handler]}
-
-    answer = ""
-    for step in graph.stream(
-        {
-            "question": body.question,
-            "retries": 0,
-            "retriever_strategy": body.retriever_strategy,
-        },
-        config,
-    ):
-        for node_name, state_update in step.items():
-            event = {"type": "status", "node": node_name}
-            if "generation" in state_update:
-                answer = state_update["generation"]
-                event["type"] = "token"
-                event["content"] = answer
-            yield f"data: {json.dumps(event)}\n\n"
-
-    latency_ms = (time.perf_counter() - start) * 1000
-    metrics = handler.flush(
-        thread_id=tid, question=body.question,
-        latency_ms=latency_ms, retriever_strategy=body.retriever_strategy,
-        mode="graph",
-    )
-
     try:
-        from src.observability.metrics_store import get_store
-        get_store().record(metrics)
-    except Exception:
-        pass
+        from src.observability.cost_callback import CostCallbackHandler
 
-    done_event = {
-        "type": "done",
-        "answer": answer,
-        "cost_usd": metrics.estimated_cost_usd,
-        "latency_ms": latency_ms,
-        "tokens_used": metrics.total_tokens,
-    }
-    yield f"data: {json.dumps(done_event)}\n\n"
+        handler = CostCallbackHandler()
+        start = time.perf_counter()
+
+        import uuid
+        from src.graph.build_graph import get_graph
+
+        graph = get_graph()
+        tid = uuid.uuid4().hex[:12]
+        config = {"configurable": {"thread_id": tid}, "callbacks": [handler]}
+
+        answer = ""
+        for step in graph.stream(
+            {
+                "question": body.question,
+                "retries": 0,
+                "retriever_strategy": body.retriever_strategy,
+            },
+            config,
+        ):
+            for node_name, state_update in step.items():
+                event = {"type": "status", "node": node_name}
+                if "generation" in state_update:
+                    answer = state_update["generation"]
+                    event["type"] = "token"
+                    event["content"] = answer
+                yield f"data: {json.dumps(event)}\n\n"
+
+        latency_ms = (time.perf_counter() - start) * 1000
+
+        # Capture per-node latencies and IDK status
+        from src.observability.cost_callback import is_idk_response
+        node_latencies = None
+        try:
+            from src.graph.tracing import get_last_run_latencies
+            node_latencies = get_last_run_latencies()
+        except Exception:
+            pass
+
+        is_idk = is_idk_response(answer)
+        metrics = handler.flush(
+            thread_id=tid, question=body.question,
+            latency_ms=latency_ms, retriever_strategy=body.retriever_strategy,
+            mode="graph",
+            is_idk=is_idk,
+            node_latencies=node_latencies,
+        )
+
+        try:
+            from src.observability.metrics_store import get_store
+            get_store().record(metrics)
+        except Exception:
+            pass
+
+        done_event = {
+            "type": "done",
+            "answer": answer,
+            "cost_usd": metrics.estimated_cost_usd,
+            "latency_ms": latency_ms,
+            "tokens_used": metrics.total_tokens,
+            "node_latencies": node_latencies,
+            "is_idk": is_idk,
+        }
+        yield f"data: {json.dumps(done_event)}\n\n"
+    except Exception as e:
+        logger.exception("Streaming graph error")
+        err = {"type": "error", "message": _safe_error_detail(e)}
+        yield f"data: {json.dumps(err)}\n\n"
 
 
 def _stream_naive(body: AskRequest):
@@ -246,10 +303,13 @@ def _stream_naive(body: AskRequest):
         yield f"data: {json.dumps(event)}\n\n"
 
     latency_ms = (time.perf_counter() - start) * 1000
+    from src.observability.cost_callback import is_idk_response
+    is_idk = is_idk_response(full_answer)
     metrics = handler.flush(
         thread_id="api", question=body.question,
         latency_ms=latency_ms, retriever_strategy=body.retriever_strategy,
         mode="naive",
+        is_idk=is_idk,
     )
 
     try:
@@ -264,6 +324,7 @@ def _stream_naive(body: AskRequest):
         "cost_usd": metrics.estimated_cost_usd,
         "latency_ms": latency_ms,
         "tokens_used": metrics.total_tokens,
+        "is_idk": is_idk,
     }
     yield f"data: {json.dumps(done_event)}\n\n"
 
@@ -277,19 +338,11 @@ async def ask_endpoint(request: Request, body: AskRequest):
 
     try:
         if body.stream:
-            gen = _stream_graph(body) if body.mode == "graph" else _stream_naive(body)
+            resolved = _resolve_mode(body)
+            gen = _stream_graph(body) if resolved == "graph" else _stream_naive(body)
             return StreamingResponse(gen, media_type="text/event-stream")
 
-        answer, cost, latency, tokens = _ask_sync(body)
-        return AskResponse(
-            answer=answer,
-            question=body.question,
-            mode=body.mode,
-            retriever_strategy=body.retriever_strategy,
-            cost_usd=cost,
-            latency_ms=latency,
-            tokens_used=tokens,
-        )
+        return _ask_sync(body)
     except Exception as e:
         logger.exception("Ask endpoint failed")
         raise HTTPException(status_code=500, detail=str(e))

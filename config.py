@@ -32,10 +32,45 @@ class Settings:
     api_host: str = os.getenv("API_HOST", "0.0.0.0")
     api_port: int = int(os.getenv("API_PORT", "8000"))
 
+    # Phase 9: Security
+    cors_origins: str = os.getenv("CORS_ORIGINS", "http://localhost:8501")
+    debug_mode: bool = os.getenv("DEBUG_MODE", "false").lower() == "true"
+
     # Retrieval defaults
-    chunk_size: int = 1000
-    chunk_overlap: int = 150
-    top_k: int = 4
+    chunk_size: int = int(os.getenv("CHUNK_SIZE", "1000"))
+    chunk_overlap: int = int(os.getenv("CHUNK_OVERLAP", "200"))
+    top_k: int = int(os.getenv("TOP_K", "4"))
+
+    # Phase 8: Resilience
+    llm_timeout: int = int(os.getenv("LLM_TIMEOUT", "30"))
+    llm_max_retries: int = int(os.getenv("LLM_MAX_RETRIES", "2"))
+    cost_alert_threshold: float = float(os.getenv("COST_ALERT_THRESHOLD", "0.05"))
+    rerank_max_workers: int = int(os.getenv("RERANK_MAX_WORKERS", "4"))
+
+    # Phase 8: Retrieval enhancements
+    adaptive_k: bool = os.getenv("ADAPTIVE_K", "false").lower() == "true"
+    adaptive_k_min: int = int(os.getenv("ADAPTIVE_K_MIN", "3"))
+    adaptive_k_max: int = int(os.getenv("ADAPTIVE_K_MAX", "8"))
+    per_doc_grading: bool = os.getenv("PER_DOC_GRADING", "false").lower() == "true"
+
+    # Phase 8: Multi-part processing
+    sub_query_max_retries: int = int(os.getenv("SUB_QUERY_MAX_RETRIES", "1"))
+    parallel_sub_queries: bool = os.getenv("PARALLEL_SUB_QUERIES", "false").lower() == "true"
+    sub_query_max_workers: int = int(os.getenv("SUB_QUERY_MAX_WORKERS", "3"))
+
+    # Phase 8: Ingestion
+    markdown_aware_chunking: bool = os.getenv("MARKDOWN_AWARE_CHUNKING", "true").lower() == "true"
+
+    # Phase 8: Prompts & Tools
+    chain_of_thought: bool = os.getenv("CHAIN_OF_THOUGHT", "false").lower() == "true"
+    enable_tools: bool = os.getenv("ENABLE_TOOLS", "false").lower() == "true"
+
+    # Phase 8: Infrastructure
+    chroma_refresh_interval: int = int(os.getenv("CHROMA_REFRESH_INTERVAL", "300"))
+    document_ttl_days: int = int(os.getenv("DOCUMENT_TTL_DAYS", "0"))
+    semantic_cache_enabled: bool = os.getenv("SEMANTIC_CACHE_ENABLED", "false").lower() == "true"
+    semantic_cache_threshold: float = float(os.getenv("SEMANTIC_CACHE_THRESHOLD", "0.95"))
+    semantic_cache_ttl: int = int(os.getenv("SEMANTIC_CACHE_TTL", "3600"))
 
     _VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
@@ -59,6 +94,12 @@ class Settings:
             )
         if self.top_k <= 0:
             raise ValueError(f"top_k must be positive, got {self.top_k}")
+        if self.llm_timeout <= 0:
+            raise ValueError(f"llm_timeout must be positive, got {self.llm_timeout}")
+        if self.llm_max_retries < 0:
+            raise ValueError(f"llm_max_retries must be non-negative, got {self.llm_max_retries}")
+        if self.cost_alert_threshold <= 0:
+            raise ValueError(f"cost_alert_threshold must be positive, got {self.cost_alert_threshold}")
         if self.langsmith_tracing.lower() == "true" and not self.langsmith_api_key:
             logging.getLogger(__name__).warning(
                 "LANGSMITH_TRACING is enabled but LANGSMITH_API_KEY is not set — "

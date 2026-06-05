@@ -13,6 +13,7 @@ reducing hallucination from noisy context.
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_core.documents import Document
@@ -103,9 +104,20 @@ class RerankRetriever(BaseRetriever):
             model=settings.llm_model,
             temperature=0,
             api_key=settings.openai_api_key,
+            timeout=settings.llm_timeout,
+            max_retries=settings.llm_max_retries,
         )
 
-        scored = [self._score_document(llm, query, doc) for doc in candidates]
+        # Score documents in parallel using thread pool
+        max_workers = min(settings.rerank_max_workers, len(candidates))
+        scored: list[tuple[Document, int]] = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(self._score_document, llm, query, doc): doc
+                for doc in candidates
+            }
+            for future in as_completed(futures):
+                scored.append(future.result())
         scored.sort(key=lambda x: x[1], reverse=True)
 
         result = [doc for doc, _score in scored[: self.k]]
@@ -125,6 +137,6 @@ def build_rerank_retriever(
     """Build and return a reranking retriever."""
     return RerankRetriever(
         k=k or settings.top_k,
-        fetch_k=max(12, (k or settings.top_k) * 3),
+        fetch_k=min(15, max(12, (k or settings.top_k) * 3)),
         filter=filter,
     )

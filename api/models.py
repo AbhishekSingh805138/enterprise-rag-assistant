@@ -12,8 +12,8 @@ from pydantic import BaseModel, Field
 
 class AskRequest(BaseModel):
     question: str = Field(..., min_length=1, description="The question to ask")
-    mode: Literal["naive", "graph"] = "naive"
-    retriever_strategy: Literal["dense", "hybrid", "multi_query", "rerank"] = "dense"
+    mode: Literal["naive", "graph", "auto"] = "naive"
+    retriever_strategy: Literal["dense", "hybrid", "multi_query", "rerank", "hybrid_rerank"] = "dense"
     filter: dict[str, str] | None = None
     top_k: int | None = Field(None, gt=0)
     stream: bool = False
@@ -27,6 +27,8 @@ class AskResponse(BaseModel):
     cost_usd: float
     latency_ms: float
     tokens_used: int
+    node_latencies: dict[str, float] | None = None
+    is_idk: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -74,8 +76,8 @@ class HealthResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 class EvalRequest(BaseModel):
-    mode: Literal["naive", "graph"] = "naive"
-    retriever_strategy: Literal["dense", "hybrid", "multi_query", "rerank"] = "dense"
+    mode: Literal["naive", "graph", "auto"] = "naive"
+    retriever_strategy: Literal["dense", "hybrid", "multi_query", "rerank", "hybrid_rerank"] = "dense"
     limit: int | None = Field(None, gt=0)
 
 

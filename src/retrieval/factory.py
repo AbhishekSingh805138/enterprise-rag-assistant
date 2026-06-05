@@ -19,7 +19,7 @@ from langchain_core.retrievers import BaseRetriever
 
 logger = logging.getLogger(__name__)
 
-STRATEGIES = ("dense", "hybrid", "multi_query", "rerank")
+STRATEGIES = ("dense", "hybrid", "multi_query", "rerank", "hybrid_rerank")
 
 
 def get_retriever(
@@ -58,5 +58,9 @@ def get_retriever(
     if strategy == "rerank":
         from src.retrieval.rerank import build_rerank_retriever
         return build_rerank_retriever(k=k, filter=filter)
+
+    if strategy == "hybrid_rerank":
+        from src.retrieval.composed import build_composed_retriever
+        return build_composed_retriever(k=k, filter=filter, first_stage="hybrid")
 
     raise ValueError(f"Strategy {strategy!r} not implemented")  # unreachable

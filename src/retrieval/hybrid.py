@@ -11,7 +11,9 @@ where k=60 is the standard smoothing constant.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
+import re
 
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_core.documents import Document
@@ -25,10 +27,37 @@ logger = logging.getLogger(__name__)
 
 RRF_K = 60  # standard smoothing constant
 
+# Stop words for BM25 tokenization — high-frequency words that add noise
+_STOP_WORDS = frozenset({
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "shall", "can", "need", "dare", "ought",
+    "to", "of", "in", "for", "on", "with", "at", "by", "from", "as",
+    "into", "through", "during", "before", "after", "above", "below",
+    "between", "out", "off", "over", "under", "again", "further", "then",
+    "once", "here", "there", "when", "where", "why", "how", "all", "each",
+    "every", "both", "few", "more", "most", "other", "some", "such", "no",
+    "nor", "not", "only", "own", "same", "so", "than", "too", "very",
+    "and", "but", "or", "if", "while", "about", "up", "it", "its", "i",
+    "me", "my", "we", "our", "you", "your", "he", "him", "his", "she",
+    "her", "they", "them", "their", "what", "which", "who", "whom", "this",
+    "that", "these", "those", "am",
+})
+
+# Module-level BM25 cache: filter_hash -> (BM25Okapi, list[Document])
+_bm25_cache: dict[str, tuple[BM25Okapi, list[Document]]] = {}
+
 
 def _tokenize(text: str) -> list[str]:
-    """Simple whitespace + lowercase tokenizer for BM25."""
-    return text.lower().split()
+    """Regex-based tokenizer with stop-word filtering for BM25."""
+    tokens = re.findall(r"\b\w+\b", text.lower())
+    return [t for t in tokens if len(t) > 1 and t not in _STOP_WORDS]
+
+
+def reset_bm25_cache() -> None:
+    """Clear the BM25 cache (call after adding new documents)."""
+    _bm25_cache.clear()
+    logger.debug("BM25 cache cleared")
 
 
 class HybridRetriever(BaseRetriever):
@@ -41,14 +70,31 @@ class HybridRetriever(BaseRetriever):
     _bm25: BM25Okapi | None = PrivateAttr(default=None)
     _corpus_docs: list[Document] = PrivateAttr(default_factory=list)
 
+    @staticmethod
+    def _filter_cache_key(filter: dict | None) -> str:
+        """Produce a stable cache key from the metadata filter."""
+        if not filter:
+            return "__no_filter__"
+        parts = sorted(f"{k}={v}" for k, v in filter.items())
+        return "|".join(parts)
+
     def _build_bm25_index(self) -> None:
-        """Load all documents from ChromaDB and build a BM25 index."""
+        """Load all documents from ChromaDB and build a BM25 index.
+
+        Uses a module-level cache keyed by filter hash so the index is
+        built only once per filter combination.
+        """
+        cache_key = self._filter_cache_key(self.filter)
+
+        # Check module-level cache first
+        if cache_key in _bm25_cache:
+            self._bm25, self._corpus_docs = _bm25_cache[cache_key]
+            logger.debug("BM25 cache hit for key=%s (%d docs)", cache_key, len(self._corpus_docs))
+            return
+
         from src.vectorstore.chroma_store import get_vectorstore
 
         store = get_vectorstore()
-        # Access the underlying Chroma collection for bulk fetch.
-        # Chroma's public retriever API doesn't support fetching all docs,
-        # so we use _collection which is stable in chromadb>=0.5.
         collection = store._collection
 
         try:
@@ -88,6 +134,9 @@ class HybridRetriever(BaseRetriever):
         self._bm25 = BM25Okapi(tokenized)
         logger.info("BM25 index built: %d documents", len(self._corpus_docs))
 
+        # Store in module-level cache
+        _bm25_cache[cache_key] = (self._bm25, self._corpus_docs)
+
     def _get_bm25_results(self, query: str, n: int) -> list[tuple[Document, float]]:
         """Return top-n BM25 results as (doc, score) pairs."""
         if self._bm25 is None:
@@ -118,7 +167,7 @@ class HybridRetriever(BaseRetriever):
         doc_map: dict[str, Document] = {}
 
         def _doc_key(doc: Document) -> str:
-            return doc.page_content[:200]
+            return hashlib.md5(doc.page_content.encode()).hexdigest()
 
         # Score dense results by rank
         for rank, doc in enumerate(dense_docs, start=1):

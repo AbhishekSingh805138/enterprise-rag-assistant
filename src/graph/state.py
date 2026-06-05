@@ -26,3 +26,7 @@ class RAGState(TypedDict, total=False):
     sub_answers: list[str]      # intermediate answers per sub-query
     is_multi_part: bool         # planner verdict: does question need decomposition?
     current_sub_idx: int        # loop index for sequential sub-query processing
+    # Phase 8: graph intelligence
+    in_scope: bool              # scope detector verdict
+    all_sub_documents: list[Document]  # accumulated docs across sub-queries
+    tool_results: list[str]     # Phase 8: results from tool invocations

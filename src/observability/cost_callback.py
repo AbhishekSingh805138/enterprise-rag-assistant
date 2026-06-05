@@ -9,7 +9,8 @@ negligible (~$0.0001/query at text-embedding-3-small rates) and is excluded.
 from __future__ import annotations
 
 import logging
-from typing import Any, NamedTuple
+from dataclasses import dataclass, field
+from typing import Any
 from uuid import UUID
 
 from langchain_core.callbacks.base import BaseCallbackHandler
@@ -26,8 +27,19 @@ MODEL_COSTS: dict[str, tuple[float, float]] = {
     "text-embedding-3-small": (0.00002, 0.00002),
 }
 
+# IDK phrases used to detect "I don't know" answers
+IDK_PHRASES = [
+    "don't have enough information",
+    "cannot answer",
+    "no information available",
+    "not enough information",
+    "unable to answer",
+    "no relevant information",
+]
 
-class QueryMetrics(NamedTuple):
+
+@dataclass
+class QueryMetrics:
     """Snapshot of cost/latency for a single query."""
 
     thread_id: str
@@ -39,6 +51,16 @@ class QueryMetrics(NamedTuple):
     latency_ms: float
     retriever_strategy: str
     mode: str  # "naive" or "graph"
+    # Phase 8 additions
+    is_idk: bool = False
+    grader_rejected: int = 0
+    node_latencies: dict | None = None
+
+
+def is_idk_response(text: str) -> bool:
+    """Check if a response is an 'I don't know' answer."""
+    lower = text.lower()
+    return any(phrase in lower for phrase in IDK_PHRASES)
 
 
 def compute_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
@@ -105,6 +127,9 @@ class CostCallbackHandler(BaseCallbackHandler):
         latency_ms: float,
         retriever_strategy: str,
         mode: str,
+        is_idk: bool = False,
+        grader_rejected: int = 0,
+        node_latencies: dict | None = None,
     ) -> QueryMetrics:
         """Snapshot current totals, reset counters, and return metrics."""
         metrics = QueryMetrics(
@@ -117,6 +142,9 @@ class CostCallbackHandler(BaseCallbackHandler):
             latency_ms=latency_ms,
             retriever_strategy=retriever_strategy,
             mode=mode,
+            is_idk=is_idk,
+            grader_rejected=grader_rejected,
+            node_latencies=node_latencies,
         )
         # Reset for next query
         self._prompt_tokens = 0

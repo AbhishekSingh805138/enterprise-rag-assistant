@@ -39,6 +39,6 @@ class TestSettingsValidation:
     def test_defaults_are_sensible(self):
         s = Settings(openai_api_key="sk-test")
         assert s.chunk_size == 1000
-        assert s.chunk_overlap == 150
+        assert s.chunk_overlap == 200
         assert s.top_k == 4
         assert s.llm_model == "gpt-4o-mini"

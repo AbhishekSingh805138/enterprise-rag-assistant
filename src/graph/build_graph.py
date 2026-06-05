@@ -50,7 +50,9 @@ from src.graph.planner import (
     route_after_plan,
     synthesize,
 )
+from src.graph.scope_detector import scope_check
 from src.graph.state import RAGState
+from src.graph.tool_node import tool_router
 
 logger = logging.getLogger(__name__)
 
@@ -71,9 +73,23 @@ def _get_sqlite_checkpointer() -> SqliteSaver:
     return saver
 
 
+def _route_after_scope(state: dict) -> str:
+    """Route based on scope check: in-scope -> planner, out-of-scope -> generate."""
+    if state.get("in_scope", True):
+        return "planner"
+    return "generate"
+
+
 def build_graph(checkpointer=None):
     """Build and compile the CRAG StateGraph with Phase 5 planner."""
     builder = StateGraph(RAGState)
+
+    # Phase 8: scope detection (before planner)
+    builder.add_node("scope_check", scope_check)
+
+    # Phase 8: tool routing (optional, gated by ENABLE_TOOLS)
+    if settings.enable_tools:
+        builder.add_node("tool_router", tool_router)
 
     # Phase 5: planner and multi-part processing nodes
     builder.add_node("planner", planner)
@@ -88,8 +104,27 @@ def build_graph(checkpointer=None):
     builder.add_node("generate", generate)
     builder.add_node("critic", critic)
 
-    # Entry: planner decides the path
-    builder.add_edge(START, "planner")
+    # Entry: scope check → planner or generate (IDK for out-of-scope)
+    builder.add_edge(START, "scope_check")
+    if settings.enable_tools:
+        builder.add_conditional_edges(
+            "scope_check",
+            _route_after_scope,
+            {
+                "planner": "tool_router",
+                "generate": "generate",
+            },
+        )
+        builder.add_edge("tool_router", "planner")
+    else:
+        builder.add_conditional_edges(
+            "scope_check",
+            _route_after_scope,
+            {
+                "planner": "planner",
+                "generate": "generate",
+            },
+        )
     builder.add_conditional_edges(
         "planner",
         route_after_plan,
@@ -182,18 +217,27 @@ def ask(
 
         # Record metrics — never let metrics failures break the query
         try:
+            from src.graph.tracing import get_last_run_latencies
+            from src.observability.cost_callback import is_idk_response
+
+            node_lats = get_last_run_latencies()
+            grader_rejected = 1 if not result.get("relevant", True) else 0
             metrics = handler.flush(
                 thread_id=tid,
                 question=question,
                 latency_ms=latency_ms,
                 retriever_strategy=retriever_strategy,
                 mode="graph",
+                is_idk=is_idk_response(answer),
+                grader_rejected=grader_rejected,
+                node_latencies=node_lats,
             )
             from src.observability.metrics_store import get_store
             get_store().record(metrics)
             logger.info(
-                "Query metrics: $%.5f, %d tokens, %.0fms",
+                "Query metrics: $%.5f, %d tokens, %.0fms, idk=%s",
                 metrics.estimated_cost_usd, metrics.total_tokens, metrics.latency_ms,
+                metrics.is_idk,
             )
         except Exception:
             logger.debug("Failed to record query metrics", exc_info=True)

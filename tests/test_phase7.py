@@ -349,7 +349,7 @@ class TestCORS:
         resp = client.options(
             "/ask",
             headers={
-                "Origin": "http://localhost:3000",
+                "Origin": "http://localhost:8501",
                 "Access-Control-Request-Method": "POST",
             },
         )

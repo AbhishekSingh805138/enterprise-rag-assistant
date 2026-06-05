@@ -11,5 +11,7 @@ Strategies:
     rerank      — Dense retrieval + LLM cross-encoder reranking
 """
 from src.retrieval.factory import get_retriever, STRATEGIES
+from src.retrieval.normalizer import normalize_query
+from src.retrieval.dept_detector import detect_department
 
-__all__ = ["get_retriever", "STRATEGIES"]
+__all__ = ["get_retriever", "STRATEGIES", "normalize_query", "detect_department"]

@@ -13,6 +13,7 @@ Each variant may surface documents the original query missed.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
@@ -51,6 +52,8 @@ def _generate_variants(question: str, n: int = NUM_VARIANTS) -> list[str]:
         model=settings.llm_model,
         temperature=0.7,
         api_key=settings.openai_api_key,
+        timeout=settings.llm_timeout,
+        max_retries=settings.llm_max_retries,
     )
     chain = _EXPAND_PROMPT | llm | StrOutputParser()
     raw = chain.invoke({"question": question, "n": n})
@@ -96,7 +99,7 @@ class MultiQueryRetriever(BaseRetriever):
         for q in all_queries:
             docs = self._get_dense_results(q)
             for doc in docs:
-                key = doc.page_content[:200]
+                key = hashlib.md5(doc.page_content.encode()).hexdigest()
                 if key not in seen_keys:
                     seen_keys.add(key)
                     unique_docs.append(doc)

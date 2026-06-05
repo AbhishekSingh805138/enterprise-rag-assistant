@@ -79,7 +79,21 @@
       "Bash(uvicorn api.app:app --host 0.0.0.0 --port 8000)",
       "Bash(streamlit run:*)",
       "Bash(netstat -ano)",
-      "Bash(taskkill:*)"
+      "Bash(taskkill:*)",
+      "Bash(xargs cat:*)",
+      "Bash(xargs wc:*)",
+      "Bash(sed 's/=.*//')",
+      "Bash(grep -h \"^def test_\" tests/test_*.py)",
+      "Bash(wc -l tests/test_phase8*.py)",
+      "Bash(grep \"^def test\" tests/test_phase8*.py)",
+      "Bash(python3 -m pytest tests/ --collect-only -q)",
+      "Bash([ ! -f \"$dir/__init__.py\" ])",
+      "Bash(ls -la /d/Projects/enterprise-rag-assistant/src/*/\\\\__init__.py)",
+      "Bash(grep:*)",
+      "Bash(sed 's/.*: //')",
+      "Bash(awk -F'=' '{print $1}')",
+      "Bash(sed 's/^\\\\s*//')",
+      "Bash(pip show:*)"
     ]
   }
 }

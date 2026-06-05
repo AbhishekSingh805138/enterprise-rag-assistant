@@ -23,12 +23,17 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
     "You are an enterprise knowledge assistant. Answer the question using ONLY "
-    "the context below. If the context does not contain enough information to "
-    "answer the question, respond with: "
+    "the context below. Follow these rules:\n\n"
+    "1. If the context contains partial information, provide what you can "
+    "and note what specific aspects are not covered in the documents.\n"
+    "2. Only say you cannot answer if the context is completely irrelevant "
+    "to the question. In that case respond with: "
     '"I don\'t have enough information in the available documents to answer this '
-    'question." Do NOT guess or invent facts.\n\n'
-    "For every claim you make, cite the source filename in parentheses — e.g. "
-    "(handbook.md). If the answer draws from multiple sources, cite each one.\n\n"
+    'question."\n'
+    "3. Do NOT invent facts or numbers not present in the context.\n"
+    "4. Cite the source filename in parentheses after each claim — "
+    "e.g. (handbook.md).\n"
+    "5. If the answer draws from multiple sources, cite each one.\n\n"
     "Context:\n{context}"
 )
 
@@ -58,6 +63,8 @@ def build_naive_rag_chain(
         model=settings.llm_model,
         temperature=0,
         api_key=settings.openai_api_key,
+        timeout=settings.llm_timeout,
+        max_retries=settings.llm_max_retries,
     )
 
     context_and_question = RunnableParallel(
@@ -96,18 +103,22 @@ def answer(
 
         # Record metrics — never let metrics failures break the query
         try:
+            from src.observability.cost_callback import is_idk_response
+
             metrics = handler.flush(
                 thread_id=tid,
                 question=question,
                 latency_ms=latency_ms,
                 retriever_strategy=retriever_strategy,
                 mode="naive",
+                is_idk=is_idk_response(result),
             )
             from src.observability.metrics_store import get_store
             get_store().record(metrics)
             logger.info(
-                "Query metrics: $%.5f, %d tokens, %.0fms",
+                "Query metrics: $%.5f, %d tokens, %.0fms, idk=%s",
                 metrics.estimated_cost_usd, metrics.total_tokens, metrics.latency_ms,
+                metrics.is_idk,
             )
         except Exception:
             logger.debug("Failed to record query metrics", exc_info=True)
