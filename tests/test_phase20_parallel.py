@@ -146,11 +146,12 @@ class TestProcessSubQueriesParallel:
         _set_setting("parallel_sub_queries", True)
         _set_setting("sub_query_max_workers", 3)
 
-        mock_process.side_effect = [
-            ("Answer 1", FAKE_DOCS[:1]),
-            Exception("LLM timeout"),
-            ("Answer 3", FAKE_DOCS[2:3]),
-        ]
+        def _by_question(sub_q, strategy):
+            if sub_q == "Q2?":
+                raise Exception("LLM timeout")
+            return (f"Answer for {sub_q}", FAKE_DOCS[:1])
+
+        mock_process.side_effect = _by_question
 
         from src.graph.planner import process_sub_queries_parallel
 
@@ -161,9 +162,9 @@ class TestProcessSubQueriesParallel:
         result = process_sub_queries_parallel(state)
 
         assert len(result["sub_answers"]) == 3
-        assert result["sub_answers"][0] == "Answer 1"
+        assert result["sub_answers"][0] == "Answer for Q1?"
         assert "error" in result["sub_answers"][1].lower()
-        assert result["sub_answers"][2] == "Answer 3"
+        assert result["sub_answers"][2] == "Answer for Q3?"
 
     @patch("src.graph.planner._process_single_sub_query")
     def test_parallel_respects_max_workers(self, mock_process):

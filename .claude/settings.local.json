@@ -96,7 +96,13 @@
       "Bash(pip show:*)",
       "Bash(python3 -c \"import ast; import sys; ast.parse\\(open\\('/d/Projects/enterprise-rag-assistant/config.py'\\).read\\(\\)\\)\")",
       "Bash(python3:*)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Bash(cat)",
+      "Read(//tmp/**)",
+      "Bash(ls:*)",
+      "Bash(echo \"=== Test Type Classification ===\" echo \"\" echo \"Integration/E2E tests \\(explicit files\\):\" ls -1 D:/Projects/enterprise-rag-assistant/tests/test_integration.py D:/Projects/enterprise-rag-assistant/tests/test_e2e_smoke.py echo \"\" echo \"Phase tests \\(covering progressive feature additions\\):\" ls -1 D:/Projects/enterprise-rag-assistant/tests/test_phase*.py)",
+      "Bash(pkill -f \"uvicorn api.app:app\")",
+      "Bash(pkill -f \"streamlit run ui/app.py\")"
     ]
   }
 }

@@ -16,7 +16,7 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from slowapi import Limiter
@@ -25,6 +25,9 @@ from slowapi.util import get_remote_address
 from starlette.responses import JSONResponse
 
 from config import settings, setup_logging
+from src.security.auth import verify_api_key
+from src.security.guardrails import check_guardrails
+from src.security.output_filter import filter_output
 
 from api.models import (
     AskRequest,
@@ -188,16 +191,16 @@ def _ask_sync(body: AskRequest) -> AskResponse:
         tid = uuid.uuid4().hex[:12]
         sid = session_id or tid
         config = {"configurable": {"thread_id": tid}, "callbacks": [handler]}
-        result = graph.invoke(
-            {
-                "question": body.question,
-                "retries": 0,
-                "retriever_strategy": body.retriever_strategy,
-                "session_id": sid,
-            },
-            config,
-        )
-        answer = result.get("generation", "No answer was generated.")
+        invoke_state = {
+            "question": body.question,
+            "retries": 0,
+            "retriever_strategy": body.retriever_strategy,
+            "session_id": sid,
+        }
+        if body.filter:
+            invoke_state["filter"] = body.filter
+        result = graph.invoke(invoke_state, config)
+        answer = filter_output(result.get("generation", "No answer was generated."))
 
         # Capture per-node latencies from tracing
         try:
@@ -213,7 +216,7 @@ def _ask_sync(body: AskRequest) -> AskResponse:
             filter=body.filter,
             retriever_strategy=body.retriever_strategy,
         )
-        answer = chain.invoke(body.question, config={"callbacks": [handler]})
+        answer = filter_output(chain.invoke(body.question, config={"callbacks": [handler]}))
 
     latency_ms = (time.perf_counter() - start) * 1000
     is_idk = is_idk_response(answer)
@@ -269,16 +272,16 @@ async def _stream_graph(body: AskRequest, request: Request):
         config = {"configurable": {"thread_id": tid}, "callbacks": [handler]}
 
         answer = ""
+        stream_state = {
+            "question": body.question,
+            "retries": 0,
+            "retriever_strategy": body.retriever_strategy,
+            "session_id": sid,
+        }
+        if body.filter:
+            stream_state["filter"] = body.filter
         for step in await asyncio.to_thread(
-            lambda: list(graph.stream(
-                {
-                    "question": body.question,
-                    "retries": 0,
-                    "retriever_strategy": body.retriever_strategy,
-                    "session_id": sid,
-                },
-                config,
-            ))
+            lambda: list(graph.stream(stream_state, config))
         ):
             # Check if client disconnected between steps
             if await request.is_disconnected():
@@ -287,7 +290,7 @@ async def _stream_graph(body: AskRequest, request: Request):
 
             for node_name, state_update in step.items():
                 event = {"type": "status", "node": node_name}
-                if "generation" in state_update:
+                if state_update and "generation" in state_update:
                     answer = state_update["generation"]
                     event["type"] = "token"
                     event["content"] = answer
@@ -304,6 +307,7 @@ async def _stream_graph(body: AskRequest, request: Request):
         except Exception:
             pass
 
+        answer = filter_output(answer)
         is_idk = is_idk_response(answer)
         metrics = handler.flush(
             thread_id=tid, question=body.question,
@@ -367,7 +371,7 @@ async def _stream_naive(body: AskRequest, request: Request):
         event = {"type": "token", "content": chunk}
         yield f"data: {json.dumps(event)}\n\n"
 
-    full_answer = "".join(parts)
+    full_answer = filter_output("".join(parts))
     latency_ms = (time.perf_counter() - start) * 1000
     from src.observability.cost_callback import is_idk_response
     is_idk = is_idk_response(full_answer)
@@ -395,12 +399,18 @@ async def _stream_naive(body: AskRequest, request: Request):
     yield f"data: {json.dumps(done_event)}\n\n"
 
 
-@app.post("/ask", response_model=AskResponse, responses={400: {"model": ErrorResponse}})
+@app.post("/ask", response_model=AskResponse, responses={400: {"model": ErrorResponse}},
+           dependencies=[Depends(verify_api_key)])
 @limiter.limit(settings.rate_limit_per_minute)
 async def ask_endpoint(request: Request, body: AskRequest):
     """Query the RAG pipeline. Set stream=true for Server-Sent Events."""
     if not body.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
+
+    # API-layer guardrail check (covers both graph and naive modes)
+    guardrail = check_guardrails(body.question)
+    if not guardrail.safe:
+        raise HTTPException(status_code=400, detail=guardrail.reason)
 
     try:
         if body.stream:
@@ -442,7 +452,8 @@ def _ingest_sync(body: IngestRequest) -> IngestResponse:
     )
 
 
-@app.post("/ingest", response_model=IngestResponse, responses={400: {"model": ErrorResponse}})
+@app.post("/ingest", response_model=IngestResponse, responses={400: {"model": ErrorResponse}},
+           dependencies=[Depends(verify_api_key)])
 async def ingest_endpoint(body: IngestRequest):
     """Ingest documents from a file or directory path."""
     try:
@@ -474,7 +485,8 @@ def _sanitize_filename(name: str) -> str:
     return base
 
 
-@app.post("/upload", response_model=UploadResponse, responses={400: {"model": ErrorResponse}})
+@app.post("/upload", response_model=UploadResponse, responses={400: {"model": ErrorResponse}},
+           dependencies=[Depends(verify_api_key)])
 async def upload_endpoint(file: UploadFile, department: str = "general"):
     """Upload a document file (PDF, TXT, or MD) and ingest it into the vector store."""
     from api.models import VALID_DEPARTMENTS
@@ -571,7 +583,7 @@ async def upload_endpoint(file: UploadFile, department: str = "general"):
 # POST /eval
 # ---------------------------------------------------------------------------
 
-@app.get("/tools")
+@app.get("/tools", dependencies=[Depends(verify_api_key)])
 async def tools_endpoint():
     """List all available tools in the MCP registry."""
     from src.mcp.tool_registry import get_tool_registry
@@ -592,7 +604,7 @@ async def tools_endpoint():
     }
 
 
-@app.post("/eval", response_model=EvalResponse)
+@app.post("/eval", response_model=EvalResponse, dependencies=[Depends(verify_api_key)])
 async def eval_endpoint(body: EvalRequest):
     """Run the RAGAS evaluation suite. This is a long-running operation."""
     try:
