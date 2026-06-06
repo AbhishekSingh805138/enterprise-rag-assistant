@@ -102,7 +102,8 @@
       "Bash(ls:*)",
       "Bash(echo \"=== Test Type Classification ===\" echo \"\" echo \"Integration/E2E tests \\(explicit files\\):\" ls -1 D:/Projects/enterprise-rag-assistant/tests/test_integration.py D:/Projects/enterprise-rag-assistant/tests/test_e2e_smoke.py echo \"\" echo \"Phase tests \\(covering progressive feature additions\\):\" ls -1 D:/Projects/enterprise-rag-assistant/tests/test_phase*.py)",
       "Bash(pkill -f \"uvicorn api.app:app\")",
-      "Bash(pkill -f \"streamlit run ui/app.py\")"
+      "Bash(pkill -f \"streamlit run ui/app.py\")",
+      "Bash(find /d/Projects/enterprise-rag-assistant/src -name \"*.py\" -type f -exec grep -l \"def \" {} \\\\;)"
     ]
   }
 }
