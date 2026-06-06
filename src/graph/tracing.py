@@ -20,6 +20,7 @@ from __future__ import annotations
 import functools
 import logging
 import statistics
+import threading
 import time
 from typing import Callable
 
@@ -27,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 # Module-level accumulator: node_name -> list of elapsed_ms values
 _node_metrics: dict[str, list[float]] = {}
+_lock = threading.Lock()
 
 
 def get_node_metrics() -> dict[str, dict]:
@@ -63,7 +65,8 @@ def get_last_run_latencies() -> dict[str, float]:
 
 def reset_node_metrics() -> None:
     """Clear all accumulated metrics (for testing)."""
-    _node_metrics.clear()
+    with _lock:
+        _node_metrics.clear()
 
 
 def traced(fn: Callable[[dict], dict]) -> Callable[[dict], dict]:
@@ -86,8 +89,9 @@ def traced(fn: Callable[[dict], dict]) -> Callable[[dict], dict]:
 
         elapsed_ms = (time.perf_counter() - start) * 1000
 
-        # Record metric
-        _node_metrics.setdefault(node_name, []).append(elapsed_ms)
+        # Record metric (thread-safe)
+        with _lock:
+            _node_metrics.setdefault(node_name, []).append(elapsed_ms)
 
         # Log output summary
         n_docs_out = len(result.get("documents", []))

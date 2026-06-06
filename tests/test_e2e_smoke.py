@@ -352,6 +352,16 @@ class TestGraphStateSmoke:
             "is_multi_part", "current_sub_idx",
             # Phase 8: graph intelligence
             "in_scope", "all_sub_documents", "tool_results",
+            # Phase 10: conversation memory
+            "session_id", "chat_history", "memory_context",
+            # Phase 11: intent detection
+            "intent", "intent_confidence",
+            # Phase 12: query transformation
+            "transformed_query", "extracted_entities",
+            # Phase 15: semantic cache
+            "cache_hit",
+            # Phase 17: guardrails
+            "guardrail_passed", "guardrail_reason",
         }
         actual = set(RAGState.__annotations__.keys())
         assert expected == actual, f"Missing: {expected - actual}, Extra: {actual - expected}"

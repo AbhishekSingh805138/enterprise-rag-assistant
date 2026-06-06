@@ -40,6 +40,11 @@ def client():
         mock_settings.top_k = 4
         mock_settings.chunk_size = 1000
         mock_settings.chunk_overlap = 150
+        mock_settings.debug_mode = False
+        mock_settings.max_upload_size_mb = 10
+        mock_settings.cors_origins = "http://localhost:8501"
+        mock_settings.cors_allow_methods = "GET,POST,OPTIONS"
+        mock_settings.cors_allow_headers = "Content-Type,Authorization,X-Request-ID"
 
         from api.app import app
         with TestClient(app) as tc:

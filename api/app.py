@@ -8,6 +8,7 @@ Endpoints:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import tempfile
@@ -40,6 +41,21 @@ from api.models import (
 logger = logging.getLogger(__name__)
 
 VERSION = "1.0.0"
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _safe_error_detail(e: Exception) -> str:
+    """Return error detail safe for client consumption.
+
+    In debug mode, returns the full exception message.
+    In production, returns a generic message to avoid leaking internals.
+    """
+    if settings.debug_mode:
+        return str(e)
+    return "An internal error occurred. Please try again or contact support."
 
 # ---------------------------------------------------------------------------
 # Rate limiter
@@ -80,14 +96,18 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
     )
 
 
-# CORS — configurable via CORS_ORIGINS env var
+# CORS — configurable via env vars
 _cors_origins = [o.strip() for o in settings.cors_origins.split(",")]
+_cors_methods = [m.strip() for m in settings.cors_allow_methods.split(",")]
+_cors_headers = [h.strip() for h in settings.cors_allow_headers.split(",")]
+if "*" in _cors_origins:
+    logger.warning("CORS_ORIGINS is set to '*' — all origins allowed. Restrict for production.")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
     allow_credentials="*" not in _cors_origins,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=_cors_methods,
+    allow_headers=_cors_headers,
 )
 
 
@@ -96,8 +116,24 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 
 @app.get("/health", response_model=HealthResponse)
-async def health():
-    """Liveness check with collection stats."""
+async def health(deep: bool = False):
+    """Liveness check with collection stats. Pass ?deep=true for subsystem checks."""
+    if deep:
+        from src.observability.health_checker import deep_health_check
+        result = deep_health_check()
+        return JSONResponse(content={
+            "status": result.status,
+            "version": VERSION,
+            "checks": [
+                {
+                    "name": c.name,
+                    "status": c.status,
+                    "latency_ms": round(c.latency_ms, 1),
+                    "detail": c.detail,
+                }
+                for c in result.checks
+            ],
+        })
     try:
         from src.vectorstore.chroma_store import collection_stats
         stats = collection_stats()
@@ -142,6 +178,7 @@ def _ask_sync(body: AskRequest) -> AskResponse:
     handler = CostCallbackHandler()
     start = time.perf_counter()
     node_latencies = None
+    session_id = body.session_id or None
 
     if resolved_mode == "graph":
         from src.graph.build_graph import get_graph
@@ -149,12 +186,14 @@ def _ask_sync(body: AskRequest) -> AskResponse:
         graph = get_graph()
         import uuid
         tid = uuid.uuid4().hex[:12]
+        sid = session_id or tid
         config = {"configurable": {"thread_id": tid}, "callbacks": [handler]}
         result = graph.invoke(
             {
                 "question": body.question,
                 "retries": 0,
                 "retriever_strategy": body.retriever_strategy,
+                "session_id": sid,
             },
             config,
         )
@@ -205,11 +244,16 @@ def _ask_sync(body: AskRequest) -> AskResponse:
         tokens_used=metrics.total_tokens,
         node_latencies=node_latencies,
         is_idk=is_idk,
+        session_id=session_id,
     )
 
 
-def _stream_graph(body: AskRequest):
-    """Generator yielding SSE events for graph mode streaming."""
+async def _stream_graph(body: AskRequest, request: Request):
+    """Async generator yielding SSE events for graph mode streaming.
+
+    Checks request.is_disconnected() between steps for backpressure —
+    stops work early if the client has gone away.
+    """
     try:
         from src.observability.cost_callback import CostCallbackHandler
 
@@ -221,17 +265,26 @@ def _stream_graph(body: AskRequest):
 
         graph = get_graph()
         tid = uuid.uuid4().hex[:12]
+        sid = body.session_id or tid
         config = {"configurable": {"thread_id": tid}, "callbacks": [handler]}
 
         answer = ""
-        for step in graph.stream(
-            {
-                "question": body.question,
-                "retries": 0,
-                "retriever_strategy": body.retriever_strategy,
-            },
-            config,
+        for step in await asyncio.to_thread(
+            lambda: list(graph.stream(
+                {
+                    "question": body.question,
+                    "retries": 0,
+                    "retriever_strategy": body.retriever_strategy,
+                    "session_id": sid,
+                },
+                config,
+            ))
         ):
+            # Check if client disconnected between steps
+            if await request.is_disconnected():
+                logger.info("Client disconnected during streaming (thread=%s)", tid)
+                return
+
             for node_name, state_update in step.items():
                 event = {"type": "status", "node": node_name}
                 if "generation" in state_update:
@@ -282,8 +335,12 @@ def _stream_graph(body: AskRequest):
         yield f"data: {json.dumps(err)}\n\n"
 
 
-def _stream_naive(body: AskRequest):
-    """Generator yielding SSE events for naive mode streaming."""
+async def _stream_naive(body: AskRequest, request: Request):
+    """Async generator yielding SSE events for naive mode streaming.
+
+    Runs the chain in a thread to avoid blocking the event loop,
+    and checks for client disconnection between chunks.
+    """
     from src.observability.cost_callback import CostCallbackHandler
     from src.rag.naive_rag import build_naive_rag_chain
 
@@ -296,12 +353,21 @@ def _stream_naive(body: AskRequest):
         retriever_strategy=body.retriever_strategy,
     )
 
-    full_answer = ""
-    for chunk in chain.stream(body.question, config={"callbacks": [handler]}):
-        full_answer += chunk
+    # Collect all chunks in a thread to avoid blocking the event loop
+    chunks = await asyncio.to_thread(
+        lambda: list(chain.stream(body.question, config={"callbacks": [handler]}))
+    )
+
+    parts: list[str] = []
+    for chunk in chunks:
+        if await request.is_disconnected():
+            logger.info("Client disconnected during naive streaming")
+            return
+        parts.append(chunk)
         event = {"type": "token", "content": chunk}
         yield f"data: {json.dumps(event)}\n\n"
 
+    full_answer = "".join(parts)
     latency_ms = (time.perf_counter() - start) * 1000
     from src.observability.cost_callback import is_idk_response
     is_idk = is_idk_response(full_answer)
@@ -330,7 +396,7 @@ def _stream_naive(body: AskRequest):
 
 
 @app.post("/ask", response_model=AskResponse, responses={400: {"model": ErrorResponse}})
-@limiter.limit("30/minute")
+@limiter.limit(settings.rate_limit_per_minute)
 async def ask_endpoint(request: Request, body: AskRequest):
     """Query the RAG pipeline. Set stream=true for Server-Sent Events."""
     if not body.question.strip():
@@ -339,47 +405,53 @@ async def ask_endpoint(request: Request, body: AskRequest):
     try:
         if body.stream:
             resolved = _resolve_mode(body)
-            gen = _stream_graph(body) if resolved == "graph" else _stream_naive(body)
+            gen = _stream_graph(body, request) if resolved == "graph" else _stream_naive(body, request)
             return StreamingResponse(gen, media_type="text/event-stream")
 
-        return _ask_sync(body)
+        # Run sync pipeline in a thread to avoid blocking the event loop
+        return await asyncio.to_thread(_ask_sync, body)
     except Exception as e:
         logger.exception("Ask endpoint failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=_safe_error_detail(e))
 
 
 # ---------------------------------------------------------------------------
 # POST /ingest
 # ---------------------------------------------------------------------------
 
+def _ingest_sync(body: IngestRequest) -> IngestResponse:
+    """Run ingestion synchronously (called via asyncio.to_thread)."""
+    from src.ingestion.chunker import chunk_documents
+    from src.ingestion.loader import load_path
+    from src.vectorstore.chroma_store import add_chunks, collection_stats
+
+    docs = load_path(body.path)
+    chunks = chunk_documents(
+        docs,
+        chunk_size=body.chunk_size,
+        chunk_overlap=body.chunk_overlap,
+    )
+    added = add_chunks(chunks)
+    stats = collection_stats()
+
+    return IngestResponse(
+        documents_loaded=len(docs),
+        chunks_created=len(chunks),
+        chunks_added=added,
+        collection_total=stats["document_count"],
+    )
+
+
 @app.post("/ingest", response_model=IngestResponse, responses={400: {"model": ErrorResponse}})
 async def ingest_endpoint(body: IngestRequest):
     """Ingest documents from a file or directory path."""
     try:
-        from src.ingestion.chunker import chunk_documents
-        from src.ingestion.loader import load_path
-        from src.vectorstore.chroma_store import add_chunks, collection_stats
-
-        docs = load_path(body.path)
-        chunks = chunk_documents(
-            docs,
-            chunk_size=body.chunk_size,
-            chunk_overlap=body.chunk_overlap,
-        )
-        added = add_chunks(chunks)
-        stats = collection_stats()
-
-        return IngestResponse(
-            documents_loaded=len(docs),
-            chunks_created=len(chunks),
-            chunks_added=added,
-            collection_total=stats["document_count"],
-        )
+        return await asyncio.to_thread(_ingest_sync, body)
     except FileNotFoundError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.exception("Ingest endpoint failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=_safe_error_detail(e))
 
 
 # ---------------------------------------------------------------------------
@@ -387,19 +459,66 @@ async def ingest_endpoint(body: IngestRequest):
 # ---------------------------------------------------------------------------
 
 ALLOWED_EXTENSIONS = {".pdf", ".txt", ".md"}
+ALLOWED_MIME_TYPES = {
+    "application/pdf", "text/plain", "text/markdown", "text/x-markdown",
+    "application/octet-stream",  # browsers often send this for .md files
+}
+
+
+def _sanitize_filename(name: str) -> str:
+    """Extract the base filename and reject unsafe characters."""
+    # Strip directory components (prevents path traversal)
+    base = Path(name).name
+    if not base or ".." in base or "\x00" in base:
+        raise ValueError(f"Invalid filename: {name!r}")
+    return base
 
 
 @app.post("/upload", response_model=UploadResponse, responses={400: {"model": ErrorResponse}})
 async def upload_endpoint(file: UploadFile, department: str = "general"):
     """Upload a document file (PDF, TXT, or MD) and ingest it into the vector store."""
+    from api.models import VALID_DEPARTMENTS
+
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided.")
 
-    suffix = Path(file.filename).suffix.lower()
+    # --- Filename sanitization ---
+    try:
+        safe_name = _sanitize_filename(file.filename)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid filename.")
+
+    # --- Extension check ---
+    suffix = Path(safe_name).suffix.lower()
     if suffix not in ALLOWED_EXTENSIONS:
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported file type '{suffix}'. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}",
+        )
+
+    # --- MIME type check ---
+    content_type = file.content_type or "application/octet-stream"
+    if content_type not in ALLOWED_MIME_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported content type '{content_type}'.",
+        )
+
+    # --- Department validation ---
+    department = department.strip().lower()
+    if department not in VALID_DEPARTMENTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid department '{department}'. Allowed: {', '.join(sorted(VALID_DEPARTMENTS))}",
+        )
+
+    # --- File size check ---
+    content = await file.read()
+    max_bytes = settings.max_upload_size_mb * 1024 * 1024
+    if len(content) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large ({len(content)} bytes). Maximum: {settings.max_upload_size_mb} MB.",
         )
 
     try:
@@ -411,12 +530,11 @@ async def upload_endpoint(file: UploadFile, department: str = "general"):
         with tempfile.TemporaryDirectory() as tmpdir:
             dept_dir = Path(tmpdir) / department
             dept_dir.mkdir()
-            dest = dept_dir / file.filename
-            content = await file.read()
+            dest = dept_dir / safe_name
             dest.write_bytes(content)
             logger.info(
                 "Upload: saved %s (%d bytes) to temp dir, department=%s",
-                file.filename, len(content), department,
+                safe_name, len(content), department,
             )
 
             docs = load_path(tmpdir)
@@ -424,7 +542,7 @@ async def upload_endpoint(file: UploadFile, department: str = "general"):
             # Rewrite source metadata: replace temp path with a stable
             # identifier so citations are meaningful and content-hash
             # deduplication works across re-uploads of the same file.
-            stable_source = f"uploads/{department}/{file.filename}"
+            stable_source = f"uploads/{department}/{safe_name}"
             for doc in docs:
                 doc.metadata["source"] = stable_source
 
@@ -433,25 +551,46 @@ async def upload_endpoint(file: UploadFile, department: str = "general"):
             stats = collection_stats()
 
         logger.info(
-            "Upload complete: %s → %d docs, %d chunks, %d new (total %d)",
-            file.filename, len(docs), len(chunks), added,
+            "Upload complete: %s -> %d docs, %d chunks, %d new (total %d)",
+            safe_name, len(docs), len(chunks), added,
             stats["document_count"],
         )
         return UploadResponse(
-            filename=file.filename,
+            filename=safe_name,
             documents_loaded=len(docs),
             chunks_created=len(chunks),
             chunks_added=added,
             collection_total=stats["document_count"],
         )
     except Exception as e:
-        logger.exception("Upload endpoint failed for file: %s", file.filename)
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Upload endpoint failed for file: %s", safe_name)
+        raise HTTPException(status_code=500, detail=_safe_error_detail(e))
 
 
 # ---------------------------------------------------------------------------
 # POST /eval
 # ---------------------------------------------------------------------------
+
+@app.get("/tools")
+async def tools_endpoint():
+    """List all available tools in the MCP registry."""
+    from src.mcp.tool_registry import get_tool_registry
+
+    registry = get_tool_registry()
+    tools = registry.list_tools()
+    return {
+        "tools": [
+            {
+                "name": t.name,
+                "description": t.description,
+                "parameters": t.parameters,
+                "source": t.source,
+            }
+            for t in tools
+        ],
+        "count": len(tools),
+    }
+
 
 @app.post("/eval", response_model=EvalResponse)
 async def eval_endpoint(body: EvalRequest):
@@ -483,4 +622,4 @@ async def eval_endpoint(body: EvalRequest):
         )
     except Exception as e:
         logger.exception("Eval endpoint failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=_safe_error_detail(e))

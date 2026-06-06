@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -69,7 +70,7 @@ _MIGRATIONS = [
     "ALTER TABLE query_metrics ADD COLUMN grader_rejected INTEGER NOT NULL DEFAULT 0",
 ]
 
-COST_BUDGET = 0.02  # USD per query — PRD target
+COST_BUDGET = settings.cost_budget_per_query
 
 
 class MetricsStore:
@@ -78,6 +79,7 @@ class MetricsStore:
     def __init__(self, db_path: str) -> None:
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._lock = threading.Lock()
         self._conn.execute(_CREATE_TABLE)
         self._conn.commit()
         self._run_migrations()
@@ -94,29 +96,30 @@ class MetricsStore:
 
     def record(self, m: QueryMetrics) -> None:
         """Insert a single query's metrics."""
-        self._conn.execute(
-            "INSERT INTO query_metrics "
-            "(ts, thread_id, question, mode, retriever, prompt_tok, compl_tok, "
-            "total_tok, cost_usd, latency_ms, is_idk, grader_rejected) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                datetime.now(timezone.utc).isoformat(),
-                m.thread_id,
-                m.question_preview,
-                m.mode,
-                m.retriever_strategy,
-                m.prompt_tokens,
-                m.completion_tokens,
-                m.total_tokens,
-                m.estimated_cost_usd,
-                m.latency_ms,
-                1 if m.is_idk else 0,
-                m.grader_rejected,
-            ),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO query_metrics "
+                "(ts, thread_id, question, mode, retriever, prompt_tok, compl_tok, "
+                "total_tok, cost_usd, latency_ms, is_idk, grader_rejected) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    m.thread_id,
+                    m.question_preview,
+                    m.mode,
+                    m.retriever_strategy,
+                    m.prompt_tokens,
+                    m.completion_tokens,
+                    m.total_tokens,
+                    m.estimated_cost_usd,
+                    m.latency_ms,
+                    1 if m.is_idk else 0,
+                    m.grader_rejected,
+                ),
+            )
+            self._conn.commit()
 
-        # Cost alerting
+        # Cost alerting (outside lock — logging doesn't need DB protection)
         if m.estimated_cost_usd > settings.cost_alert_threshold:
             logger.warning(
                 "COST ALERT: query cost $%.5f exceeds threshold $%.3f — %s",
@@ -127,74 +130,79 @@ class MetricsStore:
 
     def query_recent(self, n: int = 20) -> list[dict]:
         """Return the last *n* query metrics, newest first."""
-        cur = self._conn.execute(
-            "SELECT * FROM query_metrics ORDER BY id DESC LIMIT ?", (n,)
-        )
-        return [dict(row) for row in cur.fetchall()]
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT * FROM query_metrics ORDER BY id DESC LIMIT ?", (n,)
+            )
+            return [dict(row) for row in cur.fetchall()]
 
     def summary(self, n: int | None = None) -> dict:
         """Aggregate statistics over the last *n* queries (or all if None)."""
-        if n is not None:
-            sql = (
-                "SELECT COUNT(*) AS cnt, "
-                "COALESCE(SUM(cost_usd), 0) AS total_cost, "
-                "COALESCE(AVG(cost_usd), 0) AS avg_cost, "
-                "COALESCE(AVG(latency_ms), 0) AS avg_latency, "
-                "COALESCE(SUM(total_tok), 0) AS total_tokens, "
-                "COALESCE(SUM(CASE WHEN cost_usd > ? THEN 1 ELSE 0 END), 0) AS over_budget "
-                "FROM (SELECT * FROM query_metrics ORDER BY id DESC LIMIT ?)"
-            )
-            row = self._conn.execute(sql, (COST_BUDGET, n)).fetchone()
-        else:
-            sql = (
-                "SELECT COUNT(*) AS cnt, "
-                "COALESCE(SUM(cost_usd), 0) AS total_cost, "
-                "COALESCE(AVG(cost_usd), 0) AS avg_cost, "
-                "COALESCE(AVG(latency_ms), 0) AS avg_latency, "
-                "COALESCE(SUM(total_tok), 0) AS total_tokens, "
-                "COALESCE(SUM(CASE WHEN cost_usd > ? THEN 1 ELSE 0 END), 0) AS over_budget "
-                "FROM query_metrics"
-            )
-            row = self._conn.execute(sql, (COST_BUDGET,)).fetchone()
-        return dict(row)
+        with self._lock:
+            if n is not None:
+                sql = (
+                    "SELECT COUNT(*) AS cnt, "
+                    "COALESCE(SUM(cost_usd), 0) AS total_cost, "
+                    "COALESCE(AVG(cost_usd), 0) AS avg_cost, "
+                    "COALESCE(AVG(latency_ms), 0) AS avg_latency, "
+                    "COALESCE(SUM(total_tok), 0) AS total_tokens, "
+                    "COALESCE(SUM(CASE WHEN cost_usd > ? THEN 1 ELSE 0 END), 0) AS over_budget "
+                    "FROM (SELECT * FROM query_metrics ORDER BY id DESC LIMIT ?)"
+                )
+                row = self._conn.execute(sql, (COST_BUDGET, n)).fetchone()
+            else:
+                sql = (
+                    "SELECT COUNT(*) AS cnt, "
+                    "COALESCE(SUM(cost_usd), 0) AS total_cost, "
+                    "COALESCE(AVG(cost_usd), 0) AS avg_cost, "
+                    "COALESCE(AVG(latency_ms), 0) AS avg_latency, "
+                    "COALESCE(SUM(total_tok), 0) AS total_tokens, "
+                    "COALESCE(SUM(CASE WHEN cost_usd > ? THEN 1 ELSE 0 END), 0) AS over_budget "
+                    "FROM query_metrics"
+                )
+                row = self._conn.execute(sql, (COST_BUDGET,)).fetchone()
+            return dict(row)
 
     def idk_rate(self, n: int | None = None) -> float:
         """Return the fraction of queries that resulted in IDK responses."""
-        if n is not None:
-            sql = (
-                "SELECT COALESCE(AVG(is_idk * 1.0), 0) AS rate "
-                "FROM (SELECT is_idk FROM query_metrics ORDER BY id DESC LIMIT ?)"
-            )
-            row = self._conn.execute(sql, (n,)).fetchone()
-        else:
-            sql = "SELECT COALESCE(AVG(is_idk * 1.0), 0) AS rate FROM query_metrics"
-            row = self._conn.execute(sql).fetchone()
-        return float(row["rate"]) if row else 0.0
+        with self._lock:
+            if n is not None:
+                sql = (
+                    "SELECT COALESCE(AVG(is_idk * 1.0), 0) AS rate "
+                    "FROM (SELECT is_idk FROM query_metrics ORDER BY id DESC LIMIT ?)"
+                )
+                row = self._conn.execute(sql, (n,)).fetchone()
+            else:
+                sql = "SELECT COALESCE(AVG(is_idk * 1.0), 0) AS rate FROM query_metrics"
+                row = self._conn.execute(sql).fetchone()
+            return float(row["rate"]) if row else 0.0
 
     def grader_rejection_rate(self, n: int | None = None) -> float:
         """Return the fraction of queries where the grader rejected docs."""
-        if n is not None:
-            sql = (
-                "SELECT COALESCE(AVG(CASE WHEN grader_rejected > 0 THEN 1.0 ELSE 0.0 END), 0) AS rate "
-                "FROM (SELECT grader_rejected FROM query_metrics ORDER BY id DESC LIMIT ?)"
-            )
-            row = self._conn.execute(sql, (n,)).fetchone()
-        else:
-            sql = (
-                "SELECT COALESCE(AVG(CASE WHEN grader_rejected > 0 THEN 1.0 ELSE 0.0 END), 0) AS rate "
-                "FROM query_metrics"
-            )
-            row = self._conn.execute(sql).fetchone()
-        return float(row["rate"]) if row else 0.0
+        with self._lock:
+            if n is not None:
+                sql = (
+                    "SELECT COALESCE(AVG(CASE WHEN grader_rejected > 0 THEN 1.0 ELSE 0.0 END), 0) AS rate "
+                    "FROM (SELECT grader_rejected FROM query_metrics ORDER BY id DESC LIMIT ?)"
+                )
+                row = self._conn.execute(sql, (n,)).fetchone()
+            else:
+                sql = (
+                    "SELECT COALESCE(AVG(CASE WHEN grader_rejected > 0 THEN 1.0 ELSE 0.0 END), 0) AS rate "
+                    "FROM query_metrics"
+                )
+                row = self._conn.execute(sql).fetchone()
+            return float(row["rate"]) if row else 0.0
 
     def latency_percentiles(self, n: int | None = None) -> dict:
         """Return p50, p95, p99 latency in milliseconds."""
-        if n is not None:
-            sql = "SELECT latency_ms FROM query_metrics ORDER BY id DESC LIMIT ?"
-            rows = self._conn.execute(sql, (n,)).fetchall()
-        else:
-            sql = "SELECT latency_ms FROM query_metrics"
-            rows = self._conn.execute(sql).fetchall()
+        with self._lock:
+            if n is not None:
+                sql = "SELECT latency_ms FROM query_metrics ORDER BY id DESC LIMIT ?"
+                rows = self._conn.execute(sql, (n,)).fetchall()
+            else:
+                sql = "SELECT latency_ms FROM query_metrics"
+                rows = self._conn.execute(sql).fetchall()
 
         if not rows:
             return {"p50": 0.0, "p95": 0.0, "p99": 0.0}
@@ -210,12 +218,13 @@ class MetricsStore:
     def cost_alert_check(self, threshold: float | None = None) -> list[dict]:
         """Return recent queries that exceeded the cost threshold."""
         t = threshold or settings.cost_alert_threshold
-        cur = self._conn.execute(
-            "SELECT ts, thread_id, question, cost_usd, mode, retriever "
-            "FROM query_metrics WHERE cost_usd > ? ORDER BY id DESC LIMIT 20",
-            (t,),
-        )
-        return [dict(row) for row in cur.fetchall()]
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT ts, thread_id, question, cost_usd, mode, retriever "
+                "FROM query_metrics WHERE cost_usd > ? ORDER BY id DESC LIMIT 20",
+                (t,),
+            )
+            return [dict(row) for row in cur.fetchall()]
 
     def close(self) -> None:
         """Close the underlying connection."""
@@ -230,6 +239,7 @@ class MetricsStore:
 # ---------------------------------------------------------------------------
 
 _store: MetricsStore | None = None
+_store_lock = threading.Lock()
 
 
 def _default_db_path() -> str:
@@ -240,17 +250,19 @@ def _default_db_path() -> str:
 
 
 def get_store(db_path: str | None = None) -> MetricsStore:
-    """Return the singleton MetricsStore, creating it on first call."""
+    """Return the singleton MetricsStore, creating it on first call. Thread-safe."""
     global _store
-    if _store is None:
-        _store = MetricsStore(db_path or _default_db_path())
-        logger.info("MetricsStore initialized at %s", db_path or _default_db_path())
-    return _store
+    with _store_lock:
+        if _store is None:
+            _store = MetricsStore(db_path or _default_db_path())
+            logger.info("MetricsStore initialized at %s", db_path or _default_db_path())
+        return _store
 
 
 def reset_store() -> None:
     """Close and discard the singleton (for testing)."""
     global _store
-    if _store is not None:
-        _store.close()
-        _store = None
+    with _store_lock:
+        if _store is not None:
+            _store.close()
+            _store = None

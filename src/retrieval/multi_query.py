@@ -25,10 +25,11 @@ from langchain_openai import ChatOpenAI
 from pydantic import Field
 
 from config import settings
+from src.llm_pool import get_llm
 
 logger = logging.getLogger(__name__)
 
-NUM_VARIANTS = 3  # number of query variants to generate
+NUM_VARIANTS = settings.num_query_variants
 
 _EXPAND_PROMPT = ChatPromptTemplate.from_messages(
     [

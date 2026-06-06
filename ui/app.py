@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 
 import requests
 import streamlit as st
@@ -36,10 +37,11 @@ st.set_page_config(
 with st.sidebar:
     st.title("Settings")
 
-    mode = st.selectbox("Pipeline Mode", ["naive", "graph"], index=1)
+    mode = st.selectbox("Pipeline Mode", ["naive", "graph", "auto"], index=1)
     retriever = st.selectbox(
         "Retriever Strategy",
-        ["dense", "hybrid", "multi_query", "rerank"],
+        ["dense", "hybrid", "multi_query", "rerank", "cross_rerank",
+         "hybrid_cross_rerank", "knowledge_graph"],
         index=1,
     )
 
@@ -99,6 +101,16 @@ with st.sidebar:
                 st.error(f"Upload error: {e}")
 
     st.divider()
+
+    # Session management
+    st.subheader("Conversation")
+    st.caption(f"Session: {st.session_state.session_id}")
+    if st.button("New Conversation"):
+        st.session_state.messages = []
+        st.session_state.session_id = uuid.uuid4().hex[:12]
+        st.rerun()
+
+    st.divider()
     st.caption("Enterprise RAG Assistant v1.0")
     st.caption("Powered by LangChain + LangGraph + ChromaDB")
 
@@ -109,6 +121,8 @@ with st.sidebar:
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "session_id" not in st.session_state:
+    st.session_state.session_id = uuid.uuid4().hex[:12]
 
 st.title("Enterprise RAG Assistant")
 
@@ -118,13 +132,18 @@ for msg in st.session_state.messages:
         st.markdown(msg["content"])
         if msg.get("meta"):
             meta = msg["meta"]
-            st.caption(
-                f"Mode: {meta.get('mode', '?')} | "
-                f"Retriever: {meta.get('retriever', '?')} | "
-                f"Tokens: {meta.get('tokens', '?')} | "
-                f"Cost: ${meta.get('cost', 0):.5f} | "
-                f"Latency: {meta.get('latency', 0):.0f}ms"
-            )
+            parts = [
+                f"Mode: {meta.get('mode', '?')}",
+                f"Retriever: {meta.get('retriever', '?')}",
+                f"Tokens: {meta.get('tokens', '?')}",
+                f"Cost: ${meta.get('cost', 0):.5f}",
+                f"Latency: {meta.get('latency', 0):.0f}ms",
+            ]
+            if meta.get("intent"):
+                parts.append(f"Intent: {meta['intent']}")
+            if meta.get("cache_hit"):
+                parts.append("Cache: HIT")
+            st.caption(" | ".join(parts))
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +169,7 @@ if prompt := st.chat_input("Ask a question about enterprise documents..."):
                     "mode": mode,
                     "retriever_strategy": retriever,
                     "stream": True,
+                    "session_id": st.session_state.session_id,
                 },
                 stream=True,
                 timeout=60,
@@ -186,18 +206,25 @@ if prompt := st.chat_input("Ask a question about enterprise documents..."):
                         "cost": data.get("cost_usd", 0),
                         "latency": data.get("latency_ms", 0),
                         "tokens": data.get("tokens_used", 0),
+                        "intent": data.get("intent"),
+                        "cache_hit": data.get("cache_hit", False),
                     }
 
             # Final display
             placeholder.markdown(full_text)
             if meta:
-                meta_placeholder.caption(
-                    f"Mode: {meta.get('mode', '?')} | "
-                    f"Retriever: {meta.get('retriever', '?')} | "
-                    f"Tokens: {meta.get('tokens', '?')} | "
-                    f"Cost: ${meta.get('cost', 0):.5f} | "
-                    f"Latency: {meta.get('latency', 0):.0f}ms"
-                )
+                parts = [
+                    f"Mode: {meta.get('mode', '?')}",
+                    f"Retriever: {meta.get('retriever', '?')}",
+                    f"Tokens: {meta.get('tokens', '?')}",
+                    f"Cost: ${meta.get('cost', 0):.5f}",
+                    f"Latency: {meta.get('latency', 0):.0f}ms",
+                ]
+                if meta.get("intent"):
+                    parts.append(f"Intent: {meta['intent']}")
+                if meta.get("cache_hit"):
+                    parts.append("Cache: HIT")
+                meta_placeholder.caption(" | ".join(parts))
 
             st.session_state.messages.append({
                 "role": "assistant",

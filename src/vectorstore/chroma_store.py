@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import threading
 import time
 
 from langchain_chroma import Chroma
@@ -30,6 +31,7 @@ logger = logging.getLogger(__name__)
 _embeddings: OpenAIEmbeddings | None = None
 _vectorstore: Chroma | None = None
 _last_refresh: float = 0.0  # monotonic timestamp of last refresh
+_lock = threading.Lock()
 
 
 def _get_embeddings() -> OpenAIEmbeddings:
@@ -46,31 +48,32 @@ def get_vectorstore() -> Chroma:
     """Open (or create) the persistent collection (singleton).
 
     Automatically refreshes the connection if CHROMA_REFRESH_INTERVAL has
-    elapsed since last open/refresh.
+    elapsed since last open/refresh. Thread-safe via module lock.
     """
     global _vectorstore, _last_refresh
-    now = time.monotonic()
-    if _vectorstore is not None:
-        elapsed = now - _last_refresh
-        if elapsed > settings.chroma_refresh_interval:
-            logger.info(
-                "ChromaDB refresh: %.0fs since last refresh (interval=%ds)",
-                elapsed, settings.chroma_refresh_interval,
-            )
-            _vectorstore = None  # force re-creation
+    with _lock:
+        now = time.monotonic()
+        if _vectorstore is not None:
+            elapsed = now - _last_refresh
+            if elapsed > settings.chroma_refresh_interval:
+                logger.info(
+                    "ChromaDB refresh: %.0fs since last refresh (interval=%ds)",
+                    elapsed, settings.chroma_refresh_interval,
+                )
+                _vectorstore = None  # force re-creation
 
-    if _vectorstore is None:
-        _vectorstore = Chroma(
-            collection_name=settings.chroma_collection,
-            embedding_function=_get_embeddings(),
-            persist_directory=settings.chroma_dir,
-        )
-        _last_refresh = now
-        logger.info(
-            "Opened Chroma collection '%s' at %s",
-            settings.chroma_collection, settings.chroma_dir,
-        )
-    return _vectorstore
+        if _vectorstore is None:
+            _vectorstore = Chroma(
+                collection_name=settings.chroma_collection,
+                embedding_function=_get_embeddings(),
+                persist_directory=settings.chroma_dir,
+            )
+            _last_refresh = now
+            logger.info(
+                "Opened Chroma collection '%s' at %s",
+                settings.chroma_collection, settings.chroma_dir,
+            )
+        return _vectorstore
 
 
 def refresh_store() -> None:
@@ -84,9 +87,10 @@ def refresh_store() -> None:
 def reset_store() -> None:
     """Reset singletons (useful for testing or after a full re-ingest)."""
     global _embeddings, _vectorstore, _last_refresh
-    _embeddings = None
-    _vectorstore = None
-    _last_refresh = 0.0
+    with _lock:
+        _embeddings = None
+        _vectorstore = None
+        _last_refresh = 0.0
 
 
 def _content_hash(text: str, metadata: dict) -> str:

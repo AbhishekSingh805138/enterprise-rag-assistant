@@ -5,6 +5,11 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+# Allowed department names for upload and data lookup.
+VALID_DEPARTMENTS = frozenset({
+    "general", "hr", "legal", "engineering", "finance", "security", "operations",
+})
+
 
 # ---------------------------------------------------------------------------
 # /ask
@@ -13,10 +18,14 @@ from pydantic import BaseModel, Field
 class AskRequest(BaseModel):
     question: str = Field(..., min_length=1, description="The question to ask")
     mode: Literal["naive", "graph", "auto"] = "naive"
-    retriever_strategy: Literal["dense", "hybrid", "multi_query", "rerank", "hybrid_rerank"] = "dense"
+    retriever_strategy: Literal[
+        "dense", "hybrid", "multi_query", "rerank", "hybrid_rerank",
+        "cross_rerank", "hybrid_cross_rerank", "knowledge_graph",
+    ] = "dense"
     filter: dict[str, str] | None = None
     top_k: int | None = Field(None, gt=0)
     stream: bool = False
+    session_id: str | None = Field(None, description="Session ID for multi-turn conversations")
 
 
 class AskResponse(BaseModel):
@@ -29,6 +38,9 @@ class AskResponse(BaseModel):
     tokens_used: int
     node_latencies: dict[str, float] | None = None
     is_idk: bool = False
+    session_id: str | None = None
+    intent: str | None = None
+    cache_hit: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +89,10 @@ class HealthResponse(BaseModel):
 
 class EvalRequest(BaseModel):
     mode: Literal["naive", "graph", "auto"] = "naive"
-    retriever_strategy: Literal["dense", "hybrid", "multi_query", "rerank", "hybrid_rerank"] = "dense"
+    retriever_strategy: Literal[
+        "dense", "hybrid", "multi_query", "rerank", "hybrid_rerank",
+        "cross_rerank", "hybrid_cross_rerank", "knowledge_graph",
+    ] = "dense"
     limit: int | None = Field(None, gt=0)
 
 

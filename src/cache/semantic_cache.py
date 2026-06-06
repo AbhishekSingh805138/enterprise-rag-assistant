@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,6 +53,7 @@ class SemanticCache:
         self._conn.execute(_CREATE_CACHE_TABLE)
         self._conn.commit()
         self._embed_fn = embed_fn
+        self._lock = threading.Lock()
 
     def _get_embed_fn(self):
         """Lazy-load embedding function."""
@@ -89,10 +91,11 @@ class SemanticCache:
         # Fetch all cached entries (for small cache sizes this is fine;
         # for large-scale use, switch to a vector index)
         now = datetime.now(timezone.utc)
-        rows = self._conn.execute(
-            "SELECT id, query, answer, embedding, mode, strategy, created_at, ttl "
-            "FROM semantic_cache"
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, query, answer, embedding, mode, strategy, created_at, ttl "
+                "FROM semantic_cache"
+            ).fetchall()
 
         best_score = 0.0
         best_answer = None
@@ -150,64 +153,68 @@ class SemanticCache:
             logger.debug("Cache store failed: embedding error", exc_info=True)
             return
 
-        self._conn.execute(
-            "INSERT INTO semantic_cache (query, answer, embedding, mode, strategy, created_at, ttl) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                query,
-                answer,
-                json.dumps(embedding),
-                mode,
-                strategy,
-                datetime.now(timezone.utc).isoformat(),
-                cache_ttl,
-            ),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO semantic_cache (query, answer, embedding, mode, strategy, created_at, ttl) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    query,
+                    answer,
+                    json.dumps(embedding),
+                    mode,
+                    strategy,
+                    datetime.now(timezone.utc).isoformat(),
+                    cache_ttl,
+                ),
+            )
+            self._conn.commit()
         logger.debug("Cached answer for: %s", query[:80])
 
     def invalidate(self) -> int:
         """Delete all cached entries. Returns count deleted."""
-        cur = self._conn.execute("DELETE FROM semantic_cache")
-        self._conn.commit()
-        count = cur.rowcount
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM semantic_cache")
+            self._conn.commit()
+            count = cur.rowcount
         logger.info("Invalidated %d cache entries", count)
         return count
 
     def cleanup_expired(self) -> int:
         """Delete expired entries. Returns count deleted."""
-        now = datetime.now(timezone.utc).isoformat()
-        # SQLite doesn't have native datetime diff, so we fetch and filter
-        rows = self._conn.execute(
-            "SELECT id, created_at, ttl FROM semantic_cache"
-        ).fetchall()
+        with self._lock:
+            # SQLite doesn't have native datetime diff, so we fetch and filter
+            rows = self._conn.execute(
+                "SELECT id, created_at, ttl FROM semantic_cache"
+            ).fetchall()
 
-        expired_ids = []
-        now_dt = datetime.now(timezone.utc)
-        for row in rows:
-            try:
-                created = datetime.fromisoformat(row["created_at"])
-                if (now_dt - created).total_seconds() > row["ttl"]:
+            expired_ids = []
+            now_dt = datetime.now(timezone.utc)
+            for row in rows:
+                try:
+                    created = datetime.fromisoformat(row["created_at"])
+                    if (now_dt - created).total_seconds() > row["ttl"]:
+                        expired_ids.append(row["id"])
+                except (ValueError, TypeError):
                     expired_ids.append(row["id"])
-            except (ValueError, TypeError):
-                expired_ids.append(row["id"])
+
+            if expired_ids:
+                placeholders = ",".join("?" for _ in expired_ids)
+                self._conn.execute(
+                    f"DELETE FROM semantic_cache WHERE id IN ({placeholders})",
+                    expired_ids,
+                )
+                self._conn.commit()
 
         if expired_ids:
-            placeholders = ",".join("?" for _ in expired_ids)
-            self._conn.execute(
-                f"DELETE FROM semantic_cache WHERE id IN ({placeholders})",
-                expired_ids,
-            )
-            self._conn.commit()
             logger.info("Cleaned up %d expired cache entries", len(expired_ids))
-
         return len(expired_ids)
 
     def stats(self) -> dict:
         """Return cache statistics."""
-        row = self._conn.execute(
-            "SELECT COUNT(*) AS total FROM semantic_cache"
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS total FROM semantic_cache"
+            ).fetchone()
         return {"total_entries": row["total"] if row else 0}
 
     def close(self) -> None:
@@ -223,6 +230,7 @@ class SemanticCache:
 # ---------------------------------------------------------------------------
 
 _cache: SemanticCache | None = None
+_cache_lock = threading.Lock()
 
 
 def _default_cache_db_path() -> str:
@@ -232,17 +240,19 @@ def _default_cache_db_path() -> str:
 
 
 def get_cache(db_path: str | None = None) -> SemanticCache:
-    """Return the singleton SemanticCache."""
+    """Return the singleton SemanticCache. Thread-safe."""
     global _cache
-    if _cache is None:
-        _cache = SemanticCache(db_path or _default_cache_db_path())
-        logger.info("SemanticCache initialized")
-    return _cache
+    with _cache_lock:
+        if _cache is None:
+            _cache = SemanticCache(db_path or _default_cache_db_path())
+            logger.info("SemanticCache initialized")
+        return _cache
 
 
 def reset_cache() -> None:
     """Close and discard the singleton (for testing)."""
     global _cache
-    if _cache is not None:
-        _cache.close()
-        _cache = None
+    with _cache_lock:
+        if _cache is not None:
+            _cache.close()
+            _cache = None

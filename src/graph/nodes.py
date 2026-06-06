@@ -10,6 +10,7 @@ boolean rather than free text you have to parse.
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
@@ -19,21 +20,18 @@ from pydantic import BaseModel, Field
 
 from config import settings
 from src.graph.tracing import traced
+from src.llm_pool import get_llm
+from src.resilience.circuit_breaker import CircuitBreakerOpen, get_breaker
 from src.retrieval import get_retriever
 
 logger = logging.getLogger(__name__)
 
-MAX_RETRIES = 2
+MAX_RETRIES = settings.max_retries
 
 
 def _llm(temperature: float = 0) -> ChatOpenAI:
-    return ChatOpenAI(
-        model=settings.llm_model,
-        temperature=temperature,
-        api_key=settings.openai_api_key,
-        timeout=settings.llm_timeout,
-        max_retries=settings.llm_max_retries,
-    )
+    """Return a cached LLM instance from the pool."""
+    return get_llm(temperature=temperature)
 
 
 # --- Node: retrieve --------------------------------------------------------
@@ -44,9 +42,13 @@ def retrieve(state: dict) -> dict:
     question = state["question"]
     strategy = state.get("retriever_strategy", "dense")
 
-    # Phase 8: normalize query for better retrieval
-    from src.retrieval.normalizer import normalize_query
-    normalized = normalize_query(question)
+    # Phase 12: use transformed query if available, else normalize inline
+    transformed = state.get("transformed_query", "")
+    if transformed:
+        normalized = transformed
+    else:
+        from src.retrieval.normalizer import normalize_query
+        normalized = normalize_query(question)
 
     # Phase 8: auto-detect department filter if none provided
     filter_dict = state.get("filter")
@@ -72,8 +74,18 @@ def retrieve(state: dict) -> dict:
 
     logger.info("Retrieve node (strategy=%s) — query: %s", strategy, normalized[:120])
     try:
-        docs = get_retriever(strategy=strategy, k=k, filter=filter_dict).invoke(normalized)
+        cb = get_breaker(
+            "retrieval",
+            failure_threshold=settings.circuit_breaker_threshold,
+            timeout=settings.circuit_breaker_timeout,
+        )
+        docs = cb.call(
+            lambda: get_retriever(strategy=strategy, k=k, filter=filter_dict).invoke(normalized)
+        )
         logger.info("Retrieved %d document(s)", len(docs))
+    except CircuitBreakerOpen as exc:
+        logger.warning("Retrieval circuit open: %s", exc)
+        docs = []
     except Exception:
         logger.exception("Retrieval failed for: %s", normalized[:120])
         docs = []
@@ -105,9 +117,42 @@ _grade_prompt = ChatPromptTemplate.from_messages(
 )
 
 
+_per_doc_grade_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            "You are a grader assessing whether a SINGLE retrieved document is "
+            "relevant to the user's question.\n\n"
+            "Return relevant=true if the document contains information that "
+            "can help answer the question. Return relevant=false if the "
+            "document is off-topic or irrelevant.",
+        ),
+        ("human", "Question:\n{question}\n\nDocument:\n{document}"),
+    ]
+)
+
+
+def _grade_single_doc(question: str, doc: Document) -> tuple[Document, bool]:
+    """Grade a single document for relevance. Returns (doc, is_relevant)."""
+    try:
+        grader = _per_doc_grade_prompt | _llm().with_structured_output(GradeResult)
+        verdict: GradeResult = grader.invoke(
+            {"question": question, "document": doc.page_content}
+        )
+        return doc, verdict.relevant
+    except Exception:
+        logger.debug("Per-doc grading failed for one document — keeping it")
+        return doc, True  # keep on failure
+
+
 @traced
 def grade_documents(state: dict) -> dict:
-    """Grade whether retrieved documents are relevant to the question."""
+    """Grade whether retrieved documents are relevant to the question.
+
+    When PER_DOC_GRADING is enabled, each document is graded individually
+    (optionally in parallel) and irrelevant ones are filtered out. Otherwise,
+    all documents are graded as a batch.
+    """
     question = state["question"]
     documents = state.get("documents", [])
 
@@ -115,14 +160,55 @@ def grade_documents(state: dict) -> dict:
         logger.warning("No documents to grade")
         return {"relevant": False}
 
+    # Per-document grading mode
+    if settings.per_doc_grading:
+        try:
+            max_workers = min(settings.rerank_max_workers, len(documents))
+            relevant_docs = []
+
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(_grade_single_doc, question, doc): doc
+                    for doc in documents
+                }
+                for future in as_completed(futures):
+                    doc, is_relevant = future.result()
+                    if is_relevant:
+                        relevant_docs.append(doc)
+
+            # Preserve original document order
+            original_order = {id(d): i for i, d in enumerate(documents)}
+            relevant_docs.sort(key=lambda d: original_order.get(id(d), 0))
+
+            logger.info(
+                "Per-doc grading: %d/%d documents relevant",
+                len(relevant_docs), len(documents),
+            )
+            return {
+                "relevant": len(relevant_docs) > 0,
+                "documents": relevant_docs,
+            }
+        except Exception:
+            logger.exception("Per-doc grading failed — falling back to batch grading")
+            # Fall through to batch grading
+
+    # Batch grading mode (default)
     try:
+        cb = get_breaker(
+            "llm",
+            failure_threshold=settings.circuit_breaker_threshold,
+            timeout=settings.circuit_breaker_timeout,
+        )
         grader = _grade_prompt | _llm().with_structured_output(GradeResult)
         context = "\n\n".join(d.page_content for d in documents)
-        verdict: GradeResult = grader.invoke(
-            {"question": question, "context": context}
+        verdict: GradeResult = cb.call(
+            grader.invoke, {"question": question, "context": context}
         )
         logger.info("Grader verdict: relevant=%s", verdict.relevant)
         return {"relevant": verdict.relevant}
+    except CircuitBreakerOpen as exc:
+        logger.warning("LLM circuit open during grading: %s", exc)
+        return {"relevant": False}
     except Exception:
         logger.exception("Grading failed — defaulting to relevant=False for safety")
         return {"relevant": False}
@@ -203,8 +289,13 @@ def web_search(state: dict) -> dict:
     try:
         from tavily import TavilyClient
 
+        cb = get_breaker(
+            "tavily",
+            failure_threshold=settings.circuit_breaker_threshold,
+            timeout=settings.circuit_breaker_timeout,
+        )
         client = TavilyClient(api_key=settings.tavily_api_key)
-        results = client.search(query=question, max_results=3)
+        results = cb.call(client.search, query=question, max_results=3)
 
         web_docs = [
             Document(
@@ -220,6 +311,16 @@ def web_search(state: dict) -> dict:
         logger.info("Web search returned %d result(s) for: %s", len(web_docs), question[:80])
         return {
             "documents": existing_docs + web_docs,
+            "web_fallback_used": True,
+        }
+    except CircuitBreakerOpen as exc:
+        logger.warning("Tavily circuit open: %s", exc)
+        fallback = Document(
+            page_content="(web search temporarily unavailable — circuit breaker open)",
+            metadata={"filename": "web_fallback", "source": "web"},
+        )
+        return {
+            "documents": existing_docs + [fallback],
             "web_fallback_used": True,
         }
     except Exception:
@@ -257,12 +358,20 @@ _GEN_COT_ADDENDUM = (
     "your reasoning in a <thinking> block, then give the final answer."
 )
 
+_GEN_MEMORY_ADDENDUM = (
+    "\n\nThe user may be referring to a previous conversation. Use the "
+    "conversation history below for context about what was discussed, but "
+    "still answer based on the retrieved documents.\n\n{memory_context}"
+)
 
-def _build_gen_prompt() -> ChatPromptTemplate:
-    """Build generation prompt, optionally with chain-of-thought."""
+
+def _build_gen_prompt(*, has_memory: bool = False) -> ChatPromptTemplate:
+    """Build generation prompt, optionally with chain-of-thought and memory."""
     system = _GEN_SYSTEM_BASE
     if settings.chain_of_thought:
         system += _GEN_COT_ADDENDUM
+    if has_memory:
+        system += _GEN_MEMORY_ADDENDUM
     system += "\n\nContext:\n{context}"
     return ChatPromptTemplate.from_messages(
         [("system", system), ("human", "{question}")]
@@ -270,6 +379,7 @@ def _build_gen_prompt() -> ChatPromptTemplate:
 
 
 _gen_prompt = _build_gen_prompt()
+_gen_prompt_with_memory = _build_gen_prompt(has_memory=True)
 
 
 @traced
@@ -277,6 +387,7 @@ def generate(state: dict) -> dict:
     """Generate the final cited answer from retrieved context."""
     question = state["question"]
     documents = state.get("documents", [])
+    memory_context = state.get("memory_context", "")
 
     if not documents:
         logger.warning("Generate called with no documents")
@@ -288,19 +399,34 @@ def generate(state: dict) -> dict:
         }
 
     try:
-        chain = _gen_prompt | _llm() | StrOutputParser()
-        context = "\n\n".join(
-            f"[{d.metadata.get('filename', '?')}] {d.page_content}"
-            for d in documents
+        cb = get_breaker(
+            "llm",
+            failure_threshold=settings.circuit_breaker_threshold,
+            timeout=settings.circuit_breaker_timeout,
         )
+        # Use memory-aware prompt when conversation history is available
+        prompt = _gen_prompt_with_memory if memory_context else _gen_prompt
+        chain = prompt | _llm() | StrOutputParser()
+        # Phase 14: use context builder for intelligent context construction
+        from src.context.context_builder import build_context
+        built = build_context(documents, query=question, memory_context=memory_context)
+        context = built.text
         # Include tool results if available
         tool_results = state.get("tool_results", [])
         if tool_results:
             tool_context = "\n".join(f"[tool] {r}" for r in tool_results)
             context = f"{context}\n\n{tool_context}"
-        answer = chain.invoke({"question": question, "context": context})
+        invoke_args = {"question": question, "context": context}
+        if memory_context:
+            invoke_args["memory_context"] = memory_context
+        answer = cb.call(chain.invoke, invoke_args)
         logger.info("Generated answer: %d chars", len(answer))
         return {"generation": answer}
+    except CircuitBreakerOpen as exc:
+        logger.warning("LLM circuit open during generation: %s", exc)
+        return {
+            "generation": "The service is temporarily unavailable. Please try again shortly."
+        }
     except Exception:
         logger.exception("Generation failed for: %s", question[:120])
         return {

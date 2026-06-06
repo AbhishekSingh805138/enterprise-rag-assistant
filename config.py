@@ -34,7 +34,10 @@ class Settings:
 
     # Phase 9: Security
     cors_origins: str = os.getenv("CORS_ORIGINS", "http://localhost:8501")
+    cors_allow_methods: str = os.getenv("CORS_ALLOW_METHODS", "GET,POST,OPTIONS")
+    cors_allow_headers: str = os.getenv("CORS_ALLOW_HEADERS", "Content-Type,Authorization,X-Request-ID")
     debug_mode: bool = os.getenv("DEBUG_MODE", "false").lower() == "true"
+    max_upload_size_mb: int = int(os.getenv("MAX_UPLOAD_SIZE_MB", "10"))
 
     # Retrieval defaults
     chunk_size: int = int(os.getenv("CHUNK_SIZE", "1000"))
@@ -64,6 +67,53 @@ class Settings:
     # Phase 8: Prompts & Tools
     chain_of_thought: bool = os.getenv("CHAIN_OF_THOUGHT", "false").lower() == "true"
     enable_tools: bool = os.getenv("ENABLE_TOOLS", "false").lower() == "true"
+
+    # Phase 18: MCP Integration
+    mcp_enabled: bool = os.getenv("MCP_ENABLED", "false").lower() == "true"
+
+    # Phase 9: Architecture — centralized constants
+    max_retries: int = int(os.getenv("MAX_RETRIES", "2"))
+    max_sub_questions: int = int(os.getenv("MAX_SUB_QUESTIONS", "5"))
+    num_query_variants: int = int(os.getenv("NUM_QUERY_VARIANTS", "3"))
+    rrf_k: int = int(os.getenv("RRF_K", "60"))
+    rerank_fetch_k: int = int(os.getenv("RERANK_FETCH_K", "12"))
+    rate_limit_per_minute: str = os.getenv("RATE_LIMIT_PER_MINUTE", "30/minute")
+    cost_budget_per_query: float = float(os.getenv("COST_BUDGET_PER_QUERY", "0.02"))
+
+    # Phase 9: Circuit breaker
+    circuit_breaker_threshold: int = int(os.getenv("CIRCUIT_BREAKER_THRESHOLD", "5"))
+    circuit_breaker_timeout: int = int(os.getenv("CIRCUIT_BREAKER_TIMEOUT", "60"))
+
+    # Phase 17: Authentication & Guardrails
+    auth_enabled: bool = os.getenv("AUTH_ENABLED", "false").lower() == "true"
+    api_keys: str = os.getenv("API_KEYS", "")
+    guardrails_enabled: bool = os.getenv("GUARDRAILS_ENABLED", "true").lower() == "true"
+    max_query_length: int = int(os.getenv("MAX_QUERY_LENGTH", "2000"))
+    pii_detection_enabled: bool = os.getenv("PII_DETECTION_ENABLED", "true").lower() == "true"
+
+    # Phase 13: Cross-Encoder Reranker
+    cross_encoder_model: str = os.getenv("CROSS_ENCODER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+    cross_encoder_device: str = os.getenv("CROSS_ENCODER_DEVICE", "cpu")
+    cross_encoder_batch_size: int = int(os.getenv("CROSS_ENCODER_BATCH_SIZE", "16"))
+
+    # Phase 11: Intent Detection
+    intent_detection_enabled: bool = os.getenv("INTENT_DETECTION_ENABLED", "true").lower() == "true"
+
+    # Phase 12: Query Transformer
+    query_transform_enabled: bool = os.getenv("QUERY_TRANSFORM_ENABLED", "true").lower() == "true"
+
+    # Phase 14: Context Builder
+    context_max_tokens: int = int(os.getenv("CONTEXT_MAX_TOKENS", "4000"))
+
+    # Phase 16: Knowledge Graph
+    knowledge_graph_enabled: bool = os.getenv("KNOWLEDGE_GRAPH_ENABLED", "false").lower() == "true"
+    kg_max_depth: int = int(os.getenv("KG_MAX_DEPTH", "2"))
+    kg_persist_path: str = os.getenv("KG_PERSIST_PATH", str(PROJECT_ROOT / "checkpoints" / "knowledge_graph.json"))
+
+    # Phase 10: Conversation Memory
+    memory_enabled: bool = os.getenv("MEMORY_ENABLED", "true").lower() == "true"
+    memory_max_turns: int = int(os.getenv("MEMORY_MAX_TURNS", "10"))
+    memory_max_tokens: int = int(os.getenv("MEMORY_MAX_TOKENS", "2000"))
 
     # Phase 8: Infrastructure
     chroma_refresh_interval: int = int(os.getenv("CHROMA_REFRESH_INTERVAL", "300"))
@@ -100,6 +150,8 @@ class Settings:
             raise ValueError(f"llm_max_retries must be non-negative, got {self.llm_max_retries}")
         if self.cost_alert_threshold <= 0:
             raise ValueError(f"cost_alert_threshold must be positive, got {self.cost_alert_threshold}")
+        if self.max_upload_size_mb <= 0:
+            raise ValueError(f"max_upload_size_mb must be positive, got {self.max_upload_size_mb}")
         if self.langsmith_tracing.lower() == "true" and not self.langsmith_api_key:
             logging.getLogger(__name__).warning(
                 "LANGSMITH_TRACING is enabled but LANGSMITH_API_KEY is not set — "

@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import threading
 
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_core.documents import Document
@@ -25,7 +26,7 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-RRF_K = 60  # standard smoothing constant
+RRF_K = settings.rrf_k
 
 # Stop words for BM25 tokenization — high-frequency words that add noise
 _STOP_WORDS = frozenset({
@@ -46,6 +47,7 @@ _STOP_WORDS = frozenset({
 
 # Module-level BM25 cache: filter_hash -> (BM25Okapi, list[Document])
 _bm25_cache: dict[str, tuple[BM25Okapi, list[Document]]] = {}
+_bm25_lock = threading.Lock()
 
 
 def _tokenize(text: str) -> list[str]:
@@ -56,7 +58,8 @@ def _tokenize(text: str) -> list[str]:
 
 def reset_bm25_cache() -> None:
     """Clear the BM25 cache (call after adding new documents)."""
-    _bm25_cache.clear()
+    with _bm25_lock:
+        _bm25_cache.clear()
     logger.debug("BM25 cache cleared")
 
 
@@ -86,11 +89,12 @@ class HybridRetriever(BaseRetriever):
         """
         cache_key = self._filter_cache_key(self.filter)
 
-        # Check module-level cache first
-        if cache_key in _bm25_cache:
-            self._bm25, self._corpus_docs = _bm25_cache[cache_key]
-            logger.debug("BM25 cache hit for key=%s (%d docs)", cache_key, len(self._corpus_docs))
-            return
+        # Check module-level cache first (thread-safe)
+        with _bm25_lock:
+            if cache_key in _bm25_cache:
+                self._bm25, self._corpus_docs = _bm25_cache[cache_key]
+                logger.debug("BM25 cache hit for key=%s (%d docs)", cache_key, len(self._corpus_docs))
+                return
 
         from src.vectorstore.chroma_store import get_vectorstore
 
@@ -134,8 +138,9 @@ class HybridRetriever(BaseRetriever):
         self._bm25 = BM25Okapi(tokenized)
         logger.info("BM25 index built: %d documents", len(self._corpus_docs))
 
-        # Store in module-level cache
-        _bm25_cache[cache_key] = (self._bm25, self._corpus_docs)
+        # Store in module-level cache (thread-safe)
+        with _bm25_lock:
+            _bm25_cache[cache_key] = (self._bm25, self._corpus_docs)
 
     def _get_bm25_results(self, query: str, n: int) -> list[tuple[Document, float]]:
         """Return top-n BM25 results as (doc, score) pairs."""

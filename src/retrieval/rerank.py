@@ -53,7 +53,7 @@ class RerankRetriever(BaseRetriever):
     """Retrieves candidates from dense store, then reranks with LLM scoring."""
 
     k: int = Field(default=4, description="Number of final documents to return")
-    fetch_k: int = Field(default=12, description="Candidates to retrieve before reranking")
+    fetch_k: int = Field(default_factory=lambda: settings.rerank_fetch_k, description="Candidates to retrieve before reranking")
     filter: dict | None = Field(default=None, description="Metadata filter for dense retriever")
 
     def _get_candidates(self, query: str) -> list[Document]:

@@ -30,3 +30,18 @@ class RAGState(TypedDict, total=False):
     in_scope: bool              # scope detector verdict
     all_sub_documents: list[Document]  # accumulated docs across sub-queries
     tool_results: list[str]     # Phase 8: results from tool invocations
+    # Phase 10: conversation memory
+    session_id: str             # conversation session identifier
+    chat_history: list[dict]    # prior messages [{role, content}, ...]
+    memory_context: str         # formatted history string for prompt injection
+    # Phase 11: intent detection
+    intent: str                 # classified intent type
+    intent_confidence: float    # confidence score (0.0-1.0)
+    # Phase 12: query transformation
+    transformed_query: str      # expanded/rewritten query for retrieval
+    extracted_entities: list[str]  # entity names extracted from query
+    # Phase 15: semantic cache
+    cache_hit: bool             # whether answer came from cache
+    # Phase 17: guardrails
+    guardrail_passed: bool      # whether query passed safety checks
+    guardrail_reason: str       # reason for rejection (if any)

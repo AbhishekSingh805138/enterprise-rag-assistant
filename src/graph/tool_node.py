@@ -71,12 +71,27 @@ def tool_router(state: dict) -> dict:
 
     Stores results in tool_results for the generation node to use.
     Only runs when ENABLE_TOOLS is True.
+
+    When MCP_ENABLED is True, delegates to the MCP tool router
+    for LLM-based tool selection. Falls back to regex routing otherwise.
     """
     if not settings.enable_tools:
         return {"tool_results": []}
 
     question = state["question"]
     tool_results: list[str] = list(state.get("tool_results", []))
+
+    # MCP-powered routing (LLM-based tool selection)
+    if settings.mcp_enabled:
+        try:
+            from src.mcp.tool_router import mcp_route_and_invoke
+            mcp_results = mcp_route_and_invoke(question)
+            tool_results.extend(mcp_results)
+            if mcp_results:
+                logger.info("MCP tool router: %d result(s)", len(mcp_results))
+                return {"tool_results": tool_results}
+        except Exception:
+            logger.debug("MCP routing failed — falling back to regex", exc_info=True)
 
     # Check for calculator need
     if _needs_calculator(question):

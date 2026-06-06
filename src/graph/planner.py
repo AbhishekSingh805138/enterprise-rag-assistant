@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import logging
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
@@ -20,10 +22,11 @@ from pydantic import BaseModel, Field
 
 from config import settings
 from src.graph.tracing import traced
+from src.llm_pool import get_llm
 
 logger = logging.getLogger(__name__)
 
-MAX_SUB_QUESTIONS = 5
+MAX_SUB_QUESTIONS = settings.max_sub_questions
 
 
 # --- Structured output models ------------------------------------------------
@@ -119,13 +122,8 @@ _synthesize_prompt = ChatPromptTemplate.from_messages(
 
 
 def _llm(temperature: float = 0) -> ChatOpenAI:
-    return ChatOpenAI(
-        model=settings.llm_model,
-        temperature=temperature,
-        api_key=settings.openai_api_key,
-        timeout=settings.llm_timeout,
-        max_retries=settings.llm_max_retries,
-    )
+    """Return a cached LLM instance from the pool."""
+    return get_llm(temperature=temperature)
 
 
 # --- Node: planner -----------------------------------------------------------
@@ -167,6 +165,62 @@ def planner(state: dict) -> dict:
         }
 
 
+# --- Helper: process a single sub-question ----------------------------------
+
+def _process_single_sub_query(sub_q: str, strategy: str) -> tuple[str, list]:
+    """Process one sub-question: retrieve + optional mini-CRAG + generate.
+
+    Returns (answer_text, documents_list).
+    Extracted for reuse in both sequential and parallel modes.
+    """
+    from src.retrieval import get_retriever
+
+    try:
+        docs = get_retriever(strategy=strategy).invoke(sub_q)
+    except Exception:
+        logger.exception("Retrieval failed for sub-question: %s", sub_q[:80])
+        docs = []
+
+    # Mini-CRAG: if docs seem irrelevant, rewrite and retry once
+    if docs and settings.sub_query_max_retries > 0:
+        try:
+            from src.graph.nodes import _llm as _nodes_llm, GradeResult, _grade_prompt
+            grader = _grade_prompt | _nodes_llm().with_structured_output(GradeResult)
+            context = "\n\n".join(d.page_content for d in docs[:3])
+            verdict = grader.invoke({"question": sub_q, "context": context})
+            if not verdict.relevant:
+                logger.info("Sub-query docs irrelevant — rewriting and retrying once")
+                from src.graph.nodes import _rewrite_prompt
+                rewriter = _rewrite_prompt | _llm(temperature=0.3) | StrOutputParser()
+                rewritten = rewriter.invoke({
+                    "question": sub_q,
+                    "rejected_context": context[:300],
+                })
+                try:
+                    docs = get_retriever(strategy=strategy).invoke(rewritten)
+                except Exception:
+                    logger.debug("Sub-query retry retrieval failed")
+        except Exception:
+            logger.debug("Sub-query mini-CRAG failed", exc_info=True)
+
+    # Generate answer
+    if not docs:
+        answer = f"I don't have enough information in the available documents to answer: {sub_q}"
+    else:
+        try:
+            from src.graph.nodes import _gen_prompt
+            from src.context.context_builder import build_context
+            chain = _gen_prompt | _llm() | StrOutputParser()
+            built = build_context(docs, query=sub_q)
+            context = built.text
+            answer = chain.invoke({"question": sub_q, "context": context})
+        except Exception:
+            logger.exception("Generation failed for sub-question: %s", sub_q[:80])
+            answer = f"An error occurred while answering: {sub_q}"
+
+    return answer, docs
+
+
 # --- Node: process_sub_query ------------------------------------------------
 
 @traced
@@ -191,62 +245,9 @@ def process_sub_query(state: dict) -> dict:
     all_sub_docs = list(state.get("all_sub_documents", []))
     logger.info("Processing sub-question [%d/%d]: %s", idx + 1, len(sub_questions), sub_q[:100])
 
-    # Retrieve documents for the sub-question
-    from src.retrieval import get_retriever
+    sub_answer, docs = _process_single_sub_query(sub_q, strategy)
 
-    try:
-        docs = get_retriever(strategy=strategy).invoke(sub_q)
-    except Exception:
-        logger.exception("Retrieval failed for sub-question: %s", sub_q[:80])
-        docs = []
-
-    # Phase 8: Mini-CRAG — if docs seem irrelevant, rewrite and retry once
-    if docs and settings.sub_query_max_retries > 0:
-        try:
-            from src.graph.nodes import _llm as _nodes_llm, GradeResult, _grade_prompt
-            grader = _grade_prompt | _nodes_llm().with_structured_output(GradeResult)
-            context = "\n\n".join(d.page_content for d in docs[:3])
-            verdict = grader.invoke({"question": sub_q, "context": context})
-            if not verdict.relevant:
-                logger.info("Sub-query docs irrelevant — rewriting and retrying once")
-                from src.graph.nodes import _rewrite_prompt
-                rewriter = _rewrite_prompt | _llm(temperature=0.3) | StrOutputParser()
-                rewritten = rewriter.invoke({
-                    "question": sub_q,
-                    "rejected_context": context[:300],
-                })
-                try:
-                    docs = get_retriever(strategy=strategy).invoke(rewritten)
-                    logger.info("Sub-query retry retrieved %d docs", len(docs))
-                except Exception:
-                    logger.debug("Sub-query retry retrieval failed")
-        except Exception:
-            logger.debug("Sub-query mini-CRAG failed — using original docs", exc_info=True)
-
-    # Accumulate documents across sub-queries for critic verification
     all_sub_docs.extend(docs)
-
-    # Generate answer for the sub-question
-    if not docs:
-        sub_answer = (
-            f"I don't have enough information in the available documents "
-            f"to answer: {sub_q}"
-        )
-    else:
-        try:
-            from langchain_core.output_parsers import StrOutputParser
-            from src.graph.nodes import _gen_prompt
-
-            chain = _gen_prompt | _llm() | StrOutputParser()
-            context = "\n\n".join(
-                f"[{d.metadata.get('filename', '?')}] {d.page_content}"
-                for d in docs
-            )
-            sub_answer = chain.invoke({"question": sub_q, "context": context})
-        except Exception:
-            logger.exception("Generation failed for sub-question: %s", sub_q[:80])
-            sub_answer = f"An error occurred while answering: {sub_q}"
-
     sub_answers.append(sub_answer)
     logger.info("Sub-answer [%d/%d]: %d chars", idx + 1, len(sub_questions), len(sub_answer))
 
@@ -297,6 +298,52 @@ def synthesize(state: dict) -> dict:
             f"**{q}**\n{a}" for q, a in zip(sub_questions, sub_answers)
         )
         return {"generation": fallback, "question": original_question}
+
+
+# --- Node: process_sub_queries_parallel --------------------------------------
+
+@traced
+def process_sub_queries_parallel(state: dict) -> dict:
+    """Process ALL sub-questions in parallel using a thread pool.
+
+    Alternative to the sequential process_sub_query loop. Enabled via
+    PARALLEL_SUB_QUERIES=true config flag. Processes all sub-questions
+    at once and returns all answers, skipping the sequential loop.
+    """
+    sub_questions = state.get("sub_questions", [])
+    strategy = state.get("retriever_strategy", "dense")
+
+    if not sub_questions:
+        return {"sub_answers": [], "current_sub_idx": 0, "all_sub_documents": []}
+
+    max_workers = min(settings.sub_query_max_workers, len(sub_questions))
+    logger.info("Processing %d sub-questions in parallel (workers=%d)", len(sub_questions), max_workers)
+
+    all_sub_docs = []
+    sub_answers = [""] * len(sub_questions)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_idx = {
+            executor.submit(_process_single_sub_query, sq, strategy): i
+            for i, sq in enumerate(sub_questions)
+        }
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            try:
+                answer, docs = future.result()
+                sub_answers[idx] = answer
+                all_sub_docs.extend(docs)
+                logger.info("Parallel sub-answer [%d/%d]: %d chars", idx + 1, len(sub_questions), len(answer))
+            except Exception:
+                logger.exception("Parallel sub-query %d failed", idx)
+                sub_answers[idx] = f"An error occurred while answering: {sub_questions[idx]}"
+
+    return {
+        "sub_answers": sub_answers,
+        "current_sub_idx": len(sub_questions),
+        "all_sub_documents": all_sub_docs,
+        "documents": [],  # no single-doc context after parallel
+    }
 
 
 # --- Router functions --------------------------------------------------------
